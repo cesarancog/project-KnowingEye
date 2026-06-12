@@ -1,38 +1,130 @@
-from django.shortcuts import render
+"""HTTP endpoints for the monitoring feature.
 
-# Create your views here.
-import base64
-import numpy as np
-import cv2
+The websocket consumer in ``consumers.py`` is the primary realtime path;
+these endpoints exist for fallback browsers, health checks, and admin tooling.
+"""
 
-from rest_framework.decorators import api_view
+from __future__ import annotations
+
+import logging
+
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from ai.adapter import (
+    analyze_frame_bgr,
+    enroll_reference as _enroll_reference,
+    get_pipeline_mode,
+)
+from ai.frame_utils import decode_base64_image
+from features.behavior.services import persist_analysis
+from features.session.models import ExamSession
 
-@api_view(['POST'])
-def receive_frame(request):
+logger = logging.getLogger("knowing_eye.monitoring.views")
+
+
+def _resolve_session(request, session_id):
     try:
-        image_data = request.data.get('image')
+        session = ExamSession.objects.select_related("exam", "user").get(pk=session_id)
+    except ExamSession.DoesNotExist:
+        return None, Response({"error": "Session not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        if not image_data:
-            return Response({"error": "No image provided"}, status=400)
+    if not request.user.is_admin() and session.user_id != request.user.id:
+        return None, Response(
+            {"error": "Not allowed for this session"}, status=status.HTTP_403_FORBIDDEN
+        )
 
-        header, encoded = image_data.split(";base64,")
-        decoded = base64.b64decode(encoded)
+    return session, None
 
-        np_arr = np.frombuffer(decoded, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        if frame is None:
-            return Response({"error": "Invalid image"}, status=400)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def receive_frame(request):
+    """POST /api/monitoring/frame/  — analyze a single base64 frame."""
+    image_data = request.data.get("image")
+    session_id = request.data.get("session_id")
 
-        return Response({
+    if not image_data:
+        return Response({"error": "No image provided"}, status=status.HTTP_400_BAD_REQUEST)
+    if not session_id:
+        return Response({"error": "session_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    frame = decode_base64_image(image_data)
+    if frame is None:
+        return Response({"error": "Invalid image"}, status=status.HTTP_400_BAD_REQUEST)
+
+    session, err = _resolve_session(request, session_id)
+    if err:
+        return err
+
+    if session.status != ExamSession.Status.IN_PROGRESS:
+        return Response(
+            {"error": "Session is not active"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        analysis = analyze_frame_bgr(frame, session_id=str(session_id))
+    except Exception as exc:  # noqa: BLE001 - we never want the endpoint to 500 the UI
+        logger.exception("analyze_frame_bgr failed: %s", exc)
+        return Response(
+            {"error": "Frame analysis failed", "detail": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    persisted = persist_analysis(session, analysis)
+
+    return Response(
+        {
             "status": "ok",
-            "shape": frame.shape,
-            "message": "Frame received"
-        })
+            "session_id": str(session_id),
+            "pipeline_mode": get_pipeline_mode(),
+            "shape": list(frame.shape),
+            "analysis": analysis,
+            "persisted": persisted,
+        }
+    )
 
-    except Exception as e:
-        return Response({
-            "error": str(e)
-        }, status=500)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def enroll_reference_view(request):
+    """POST /api/monitoring/enroll/  — store a reference face for a session."""
+    image_data = request.data.get("image")
+    session_id = request.data.get("session_id")
+
+    if not image_data:
+        return Response({"error": "image is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not session_id:
+        return Response({"error": "session_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    session, err = _resolve_session(request, session_id)
+    if err:
+        return err
+
+    frame = decode_base64_image(image_data)
+    if frame is None:
+        return Response({"error": "invalid image"}, status=status.HTTP_400_BAD_REQUEST)
+
+    ok = _enroll_reference(frame)
+    return Response(
+        {
+            "ok": bool(ok),
+            "pipeline_mode": get_pipeline_mode(),
+            "session_id": str(session_id),
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def monitoring_health(request):
+    """GET /api/monitoring/health/  — public health probe."""
+    return Response(
+        {
+            "status": "ok",
+            "service": "knowing-eye-monitoring",
+            "pipeline_mode": get_pipeline_mode(),
+        }
+    )

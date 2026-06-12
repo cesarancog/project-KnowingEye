@@ -10,6 +10,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { examAPI, type ExamSession, type ResponseData } from "../core/config/api";
+import { useMonitoring } from "../shared/hooks/use-monitoring";
 
 export function ExamTakingWithBackend() {
   const { examId } = useParams();
@@ -30,15 +31,24 @@ export function ExamTakingWithBackend() {
   );
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [behaviorAlerts, setBehaviorAlerts] = useState<string[]>([]);
-  const [webcamActive] = useState(true);
+  const monitoring = useMonitoring({
+    sessionId: session?.id,
+    intervalMs: 3000,
+  });
+  const webcamActive =
+    monitoring.status === "live" || monitoring.status === "fallback-rest";
 
   // Load exam session on component mount
   useEffect(() => {
     const loadExamSession = async () => {
       try {
         setLoading(true);
-        const examSession = await examAPI.startSession(parseInt(examId!));
-        setSession(examSession);
+        const examSession = await examAPI.startSession(parseInt(examId!, 10));
+        setSession({
+          ...examSession,
+          time_remaining: examSession.time_remaining_seconds ?? examSession.exam.duration_minutes * 60,
+          duration: examSession.exam.duration_minutes * 60,
+        } as ExamSession);
 
         // Initialize time spent tracking for each question
         const initialTimeSpent: { [key: number]: number } = {};
@@ -95,36 +105,21 @@ export function ExamTakingWithBackend() {
     return () => clearInterval(questionTimer);
   }, [currentQuestion]);
 
-  // Simulate behavior monitoring (would send frames to backend)
+  // Start monitoring as soon as the session is ready.
   useEffect(() => {
-    if (!webcamActive) return;
+    if (!session?.id) return;
+    monitoring.start();
+    return () => monitoring.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
 
-    const monitoringInterval = setInterval(async () => {
-      // Simulate capturing and sending frame to backend
-      // In real implementation, this would capture webcam frame
-      const mockFrameData = "base64-encoded-image-data";
-
-      try {
-        await examAPI.sendMonitoringFrame(mockFrameData);
-      } catch (err) {
-        console.warn('Monitoring frame failed:', err);
-      }
-
-      // Simulate random behavior alerts
-      if (Math.random() > 0.95) {
-        const alerts = [
-          "Face not detected",
-          "Multiple faces in frame",
-          "Looking away from screen",
-          "Posture change detected",
-        ];
-        const randomAlert = alerts[Math.floor(Math.random() * alerts.length)];
-        setBehaviorAlerts((prev) => [...prev, randomAlert].slice(-3));
-      }
-    }, 5000);
-
-    return () => clearInterval(monitoringInterval);
-  }, [webcamActive]);
+  // Surface any alerts coming from the monitoring hook to the UI banner.
+  useEffect(() => {
+    if (!monitoring.alerts.length) return;
+    setBehaviorAlerts(
+      monitoring.alerts.slice(0, 3).map((a) => a.message || "Compliance alert")
+    );
+  }, [monitoring.alerts]);
 
   const formatTime = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
@@ -157,7 +152,7 @@ export function ExamTakingWithBackend() {
       // Prepare responses data for backend
       const responses: ResponseData[] = session.exam.questions.map((question: any, index: number) => ({
         question_id: question.id,
-        answer_text: answers[index] || '',
+        answer_text: answers[question.id] || '',
         time_spent: timeSpent[index] || 0,
       }));
 
@@ -185,7 +180,7 @@ export function ExamTakingWithBackend() {
     try {
       const responses: ResponseData[] = session.exam.questions.map((question: any, index: number) => ({
         question_id: question.id,
-        answer_text: answers[index] || '',
+        answer_text: answers[question.id] || '',
         time_spent: timeSpent[index] || 0,
       }));
 
@@ -377,15 +372,35 @@ export function ExamTakingWithBackend() {
 
             {/* Webcam feed */}
             <div className="bg-card rounded-xl border border-border p-6">
-              <h3 className="font-semibold mb-4">Monitoring Feed</h3>
-              <div className="aspect-video bg-muted rounded-lg flex items-center justify-center relative overflow-hidden">
-                <Camera className="w-16 h-16 text-muted-foreground" />
-                <div className="absolute top-3 left-3 px-3 py-1 bg-red-500 text-white text-xs rounded-full flex items-center gap-1.5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">Monitoring feed</h3>
+                <span className="text-xs text-muted-foreground">
+                  {monitoring.analysis
+                    ? `compliance ${monitoring.analysis.overall_compliance_pct.toFixed(0)}%`
+                    : "warming up…"}
+                </span>
+              </div>
+              <div className="aspect-video bg-black rounded-lg flex items-center justify-center relative overflow-hidden">
+                <video
+                  ref={monitoring.videoRef}
+                  className="w-full h-full object-cover"
+                  muted
+                  playsInline
+                />
+                {!webcamActive && (
+                  <Camera className="absolute w-16 h-16 text-muted-foreground" />
+                )}
+                <div
+                  className={`absolute top-3 left-3 px-3 py-1 text-xs rounded-full flex items-center gap-1.5 ${
+                    webcamActive ? "bg-red-500 text-white" : "bg-gray-700 text-gray-200"
+                  }`}
+                >
                   <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                  Recording
-                </div>
-                <div className="absolute bottom-3 left-3 text-xs text-muted-foreground">
-                  Backend monitoring active
+                  {monitoring.status === "live"
+                    ? "Recording (WebSocket)"
+                    : monitoring.status === "fallback-rest"
+                    ? "Recording (REST)"
+                    : monitoring.status}
                 </div>
               </div>
             </div>

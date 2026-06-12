@@ -1,108 +1,170 @@
 # Knowing Eye
 
-A Full-Stack Session-Guided Web-Based Examination Platform with Integrated Behavior Monitoring System Using Facial and Postural Analysis via Computer Vision.
+**Full-Stack Session-Guided Web Examination Platform with Behavior Monitoring**
 
-## 🎯 Project Overview
+A production-ready platform that combines a centralized exam delivery system
+with real-time computer-vision behavior analysis for examination integrity.
 
-Knowing Eye is a comprehensive examination platform designed to enhance the integrity and efficiency of online assessments through AI-powered behavioral monitoring. The system combines modern web technologies with computer vision to detect and analyze examinee behavior in real-time.
+| Layer    | Stack |
+|----------|-------|
+| Frontend | React 18, Vite, TypeScript, Tailwind, Recharts |
+| Backend  | Django 6, DRF, SimpleJWT, Channels (Daphne ASGI) |
+| Realtime | WebSocket (Channels) for live monitoring |
+| AI / CV  | YOLOv8, MediaPipe, FaceNet-compatible identity verification |
+| Database | SQLite (dev), PostgreSQL (prod) |
 
-### Key Features
-- **Web-Based Examinations**: Complete exam creation, administration, and taking platform
-- **Real-Time Monitoring**: AI-powered facial and posture analysis using computer vision
-- **Behavior Analytics**: Automated detection of suspicious activities during exams
-- **Administrative Dashboard**: Comprehensive monitoring and reporting tools
-- **Session Management**: Secure exam sessions with timer and submission tracking
+## Project layout
 
-## 📁 Project Structure
-
-```
+```text
 project-KnowingEye/
-├── docs/                    # Project documentation
-│   ├── backend/            # Backend API specifications
-│   ├── database/           # Database schema and design
-│   ├── frontend/           # Frontend architecture docs
-│   └── general/            # Project overview and planning
-├── my-app/                 # Frontend React application
-│   ├── src/               # Source code
-│   ├── public/            # Static assets
-│   └── package.json       # Dependencies
-└── README.md              # This file
+├── backend/                 Django REST + Channels API
+│   ├── ai/                  Adapter bridging Django ↔ pipeline_playground
+│   ├── core/                Settings, ASGI/WSGI, exceptions, management
+│   └── features/            authentication, exams, session, monitoring, behavior, reports
+├── frontend/                React + Vite UI
+│   └── src/
+│       ├── core/            providers, router, api client, env
+│       ├── pages/           home, login, dashboard, monitoring, reports, profile, …
+│       └── shared/          components, hooks (use-monitoring), utilities
+├── pipeline_playground/     Installable CV/AI module (YOLO + MediaPipe + scoring)
+│   ├── knowing_eye/         preprocessing/detection/recognition/behavior packages
+│   ├── api/                 FastAPI standalone playground (optional)
+│   └── config/pipeline.yaml Thresholds & model paths
+├── docs/                    Architecture, WBS, IEEE / UTAUT testing packs
+└── start-dev.cmd            One-click dev bootstrap (Windows)
 ```
 
-## 🚀 Current Implementation Status
+## Quick start (Windows)
 
-### ✅ Completed (Frontend Prototype)
-- Modern React/TypeScript user interface
-- Complete exam flow simulation
-- Responsive design with dark/light themes
-- Mock behavior monitoring alerts
-- All major pages and navigation
+Double-click `start-dev.cmd` at the repo root. This boots:
 
-### 🔄 Planned (Backend & AI Integration)
-- Django REST API backend
-- PostgreSQL database
-- Real-time webcam capture
-- Computer vision analysis (YOLO, CNN, FaceNet)
-- WebSocket communication
-- User authentication and security
+* `http://127.0.0.1:8000/`     → Django ASGI (HTTP + WebSocket)
+* `http://127.0.0.1:5173/`     → Vite dev server with HMR
 
-## 🛠️ Technology Stack
+### Manual
 
-### Frontend (Implemented)
-- **React 18** with TypeScript
-- **Vite** for build tooling
-- **Tailwind CSS** + **shadcn/ui** for styling
-- **React Router** for navigation
-- **Material-UI** for additional components
+```powershell
+# --- 1. Backend ---
+cd backend
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:DB_ENGINE = "django.db.backends.sqlite3"
+python manage.py migrate
+python manage.py seed_db --noinput      # first run only
+python -m daphne -b 127.0.0.1 -p 8000 core.config.asgi:application
 
-### Backend (Planned)
-- **Django** with Python
-- **PostgreSQL** database
-- **Django REST Framework** for API
-- **WebSocket** for real-time features
-
-### AI/ML (Planned)
-- **YOLO** for object detection
-- **CNN** for feature extraction
-- **FaceNet/ArcFace** for facial recognition
-- **Computer Vision** libraries
-
-## 📖 Documentation
-
-Comprehensive documentation is available in the `docs/` folder:
-
-- **[System Overview](docs/general/Knowing Eye Overview.txt)** - Project vision and significance
-- **[Project Details](docs/general/Project.json)** - Technical specifications and requirements
-- **[Implementation Status](docs/general/Implementation_Status_Summary.md)** - Current vs planned features
-- **[API Specifications](docs/backend/)** - Backend API design
-- **[Database Schema](docs/database/)** - Data model design
-- **[Frontend Architecture](docs/frontend/)** - UI/UX implementation details
-
-## 🏃‍♂️ Quick Start
-
-### Frontend Development
-```bash
-cd my-app
+# --- 2. Frontend ---
+cd ../frontend
 npm install
+copy .env.example .env.local           # optional
 npm run dev
 ```
 
-Visit [http://localhost:5173](http://localhost:5173) to view the application.
+### Seed accounts
 
-## 🎓 Academic Context
+| Role     | Username | Password    |
+|----------|----------|-------------|
+| Admin    | `admin`  | `adminpass` |
+| Examinee | `user02` | `pass002`   |
 
-This project is developed as a capstone thesis for the **Institute of Information Technology** at **Legacy College of Compostela**, Davao de Oro, Philippines.
+## API surface
 
-**Team Members:**
-- Saturnino C. Ancog III
-- Khrisha Marie O. Cavan
-- Kervy N. Cadiente
-- Twixt Jasley J. Tamera
+| Method | Path                                                  | Purpose                                  |
+|--------|-------------------------------------------------------|------------------------------------------|
+| GET    | `/api/monitoring/health/`                             | Health + pipeline mode                   |
+| POST   | `/api/auth/token/`                                    | JWT login (access + refresh)             |
+| POST   | `/api/auth/token/refresh/`                            | Rotate JWT                               |
+| POST   | `/api/auth/register/`                                 | Create a user                            |
+| GET    | `/api/auth/profile/me/`                               | Current user profile                    |
+| PATCH  | `/api/auth/profile/update_profile/`                   | Edit profile                             |
+| POST   | `/api/auth/profile/avatar/`                           | Upload avatar (`multipart/form-data`)    |
+| POST   | `/api/auth/profile/change-password/`                  | Change password                          |
+| GET    | `/api/exams/`                                         | List exams (paginated)                   |
+| POST   | `/api/exams/`                                         | Create exam (admin)                      |
+| POST   | `/api/exams/{id}/publish/`                            | Publish a draft exam                     |
+| POST   | `/api/sessions/start/`                                | Start an exam session                    |
+| POST   | `/api/sessions/{uuid}/submit/`                        | Submit answers                           |
+| POST   | `/api/monitoring/frame/`                              | Analyze a single base64 frame            |
+| POST   | `/api/monitoring/enroll/`                             | Enroll a reference face                  |
+| GET    | `/api/behavior/logs/?session={uuid}`                  | Behavior events                          |
+| GET    | `/api/behavior/alerts/?resolved=false`                | Unresolved alerts                        |
+| POST   | `/api/behavior/alerts/{id}/resolve/`                  | Resolve an alert (admin)                 |
+| GET    | `/api/reports/summary/`                               | Dashboard KPIs                           |
+| GET    | `/api/reports/sessions/`                              | Paginated session reports               |
+| GET    | `/api/reports/sessions/{uuid}/`                       | Full session report                      |
+| GET    | `/api/reports/timeseries/`                            | Per-day activity                         |
+| GET    | `/api/reports/export/csv/`                            | CSV download                             |
+| WS     | `/ws/monitoring/{uuid}/?token={jwt-access}`           | Live monitoring (frame stream + alerts)  |
 
-## 📄 License
+The WebSocket protocol is documented in `backend/features/monitoring/consumers.py`.
 
-This project is part of an academic capstone thesis. See individual component licenses for details.
+## Computer-Vision pipeline
 
-## 📞 Contact
+`backend/ai/adapter.py` lazily loads `pipeline_playground/knowing_eye`. If the
+ML dependencies aren't present it falls back to a deterministic stub so the
+monitoring API contract is always honoured.
 
-For questions about this project, please refer to the comprehensive documentation in the `docs/` folder or contact the development team. 
+```text
+Webcam ► JPEG/base64 ► /api/monitoring/frame/ (REST) or /ws/monitoring/* (WebSocket)
+       ► ai.adapter.analyze_frame_bgr()  ← pipeline_playground.BehaviorPipeline
+       ► metrics + events + alerts ► persisted via features.behavior.services
+```
+
+### Install the full ML stack
+
+```powershell
+cd backend
+.\venv\Scripts\Activate.ps1
+pip install mediapipe ultralytics PyYAML
+# optional identity verification (Windows requires Visual C++ build tools):
+pip install -r ../pipeline_playground/requirements-identity.txt
+```
+
+When all three are present the adapter switches from `stub` → `playground`.
+
+### Tune thresholds
+
+Edit `pipeline_playground/config/pipeline.yaml` — values control compliance
+thresholds, alert severities, and metric weights. The adapter picks the file up
+automatically on next process start.
+
+## Tests
+
+```powershell
+cd backend
+$env:DB_ENGINE = "django.db.backends.sqlite3"
+$env:OPENBLAS_NUM_THREADS = "1"
+python manage.py test features
+```
+
+Currently 23 tests across:
+
+* `features.authentication` — JWT, registration, profile, password change, refresh
+* `features.exams` — CRUD, publish/archive
+* `features.session` — start, submit, lifecycle
+* `features.monitoring` — REST frame, enroll, **WebSocket consumer**, RBAC
+* `features.behavior` — logs + alerts persistence
+* `features.reports` — summary, detail, CSV export, timeseries
+
+## Production deployment
+
+See [docs/deployment.md](docs/deployment.md) for the full guide. Highlights:
+
+1. Set `DJANGO_DEBUG=False`, generate a strong `DJANGO_SECRET_KEY`.
+2. Switch the database with `DB_ENGINE=django.db.backends.postgresql` + creds.
+3. (Optional but recommended) point `REDIS_URL` to a Redis cluster for the
+   Channels layer so multiple Daphne workers can broadcast alerts to each other.
+4. Run with Daphne or Uvicorn behind Nginx as a reverse proxy.
+5. Serve the React app from `frontend/dist/` (built via `npm run build`).
+
+## Documentation
+
+* **Implementation status:** [docs/general/Implementation_Status_Summary.md](docs/general/Implementation_Status_Summary.md)
+* **WBS:** [docs/general/workflow.tree](docs/general/workflow.tree)
+* **Deployment:** [docs/deployment.md](docs/deployment.md)
+* **Pipeline integration:** [pipeline_playground/README.md](pipeline_playground/README.md)
+
+## Team
+
+Legacy College of Compostela — Institute of Information Technology (capstone).

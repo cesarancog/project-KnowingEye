@@ -7,10 +7,15 @@ import { About } from "../../pages/about";
 import { Login } from "../../pages/login";
 import { NotFound } from "../../pages/not-found";
 import { StudentDashboard } from "../../pages/student-dashboard";
-import { ExamTaking } from "../../pages/exam-taking";
+import { ExamTakingWithBackend } from "../../pages/exam-taking-backend";
 import { ExamSubmitted } from "../../pages/exam-submitted";
 import { ExamResults } from "../../pages/exam-results";
 import { ExamSummary } from "../../pages/exam-summary";
+import { Monitoring } from "../../pages/monitoring";
+import { SessionMonitor } from "../../pages/session-monitor";
+import { Reports } from "../../pages/reports";
+import { Profile } from "../../pages/profile";
+import { UsersAdmin } from "../../pages/users";
 import { ProtectedRoute } from "../../shared/components/common/protected-route";
 
 export const router = createBrowserRouter([
@@ -23,7 +28,7 @@ export const router = createBrowserRouter([
       { path: "about", Component: About },
       { path: "login", Component: Login },
 
-      // Protected admin routes
+      // Admin-only routes
       {
         path: "dashboard",
         element: (
@@ -32,8 +37,50 @@ export const router = createBrowserRouter([
           </ProtectedRoute>
         ),
       },
+      {
+        path: "monitoring",
+        element: (
+          <ProtectedRoute requiredRole="ADMIN">
+            <Monitoring />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "monitoring/:sessionId",
+        element: (
+          <ProtectedRoute>
+            <SessionMonitor />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "reports",
+        element: (
+          <ProtectedRoute requiredRole="ADMIN">
+            <Reports />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "users",
+        element: (
+          <ProtectedRoute requiredRole="ADMIN">
+            <UsersAdmin />
+          </ProtectedRoute>
+        ),
+      },
 
-      // Protected student routes
+      // Profile (any authenticated user)
+      {
+        path: "profile",
+        element: (
+          <ProtectedRoute>
+            <Profile />
+          </ProtectedRoute>
+        ),
+      },
+
+      // Student routes
       {
         path: "student/dashboard",
         element: (
@@ -46,7 +93,7 @@ export const router = createBrowserRouter([
         path: "student/exam/:examId",
         element: (
           <ProtectedRoute requiredRole="EXAMINEE">
-            <ExamTaking />
+            <ExamTakingWithBackend />
           </ProtectedRoute>
         ),
       },
@@ -67,7 +114,7 @@ export const router = createBrowserRouter([
         ),
       },
 
-      // Public exam summary (can be viewed by both roles when authenticated)
+      // Shared
       {
         path: "exams/:examId",
         element: (
