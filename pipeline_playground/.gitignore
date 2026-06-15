@@ -19,6 +19,4 @@ yolov8n.pt
 # IDE
 .idea/
 .vscode/
-
-# exclude docs folder
-docs/
+ 

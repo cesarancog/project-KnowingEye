@@ -42,12 +42,27 @@ export interface Exam {
   title: string;
   description: string;
   instructions?: string;
+  exam_code?: string | null;
   duration_minutes: number;
   total_questions: number;
   passing_score: number;
   status: "draft" | "active" | "archived";
+  available_from?: string | null;
+  available_until?: string | null;
+  max_attempts?: number;
+  is_open?: boolean;
   created_at: string;
+  updated_at?: string;
   questions?: Question[];
+  publish_readiness?: PublishReadiness;
+}
+
+export interface PublishReadiness {
+  ready: boolean;
+  issues: string[];
+  warnings: string[];
+  question_count: number;
+  total_points: number;
 }
 
 export interface Question {
@@ -249,21 +264,25 @@ class ApiClient {
     }
 
     if (!res.ok) {
-      let body: unknown;
+      const raw = await res.text();
+      let body: unknown = raw;
       try {
-        body = await res.json();
+        body = raw ? JSON.parse(raw) : null;
       } catch {
-        body = await res.text();
+        /* keep plain-text/HTML error body */
       }
-      const err = new ApiError(res.status, body);
-      throw err;
+      throw new ApiError(res.status, body);
     }
 
+    const raw = await res.text();
+    if (!raw) {
+      return undefined as T;
+    }
     const ctype = res.headers.get("content-type") ?? "";
     if (ctype.includes("application/json")) {
-      return (await res.json()) as T;
+      return JSON.parse(raw) as T;
     }
-    return (await res.text()) as unknown as T;
+    return raw as unknown as T;
   }
 
   // ----- Auth -----
@@ -412,6 +431,37 @@ class ApiClient {
     return this.request<Question>(`/exams/${examId}/questions/`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  }
+
+  async updateQuestion(examId: number, questionId: number, payload: Partial<Question>) {
+    return this.request<Question>(`/exams/${examId}/questions/${questionId}/`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteQuestion(examId: number, questionId: number) {
+    return this.request<void>(`/exams/${examId}/questions/${questionId}/`, {
+      method: "DELETE",
+    });
+  }
+
+  async getExamReadiness(examId: number) {
+    return this.request<PublishReadiness>(`/exams/${examId}/readiness/`);
+  }
+
+  async importQuestions(examId: number, csv: string) {
+    return this.request<{ imported: number; questions: Question[] }>(
+      `/exams/${examId}/questions/import/`,
+      { method: "POST", body: JSON.stringify({ csv }) }
+    );
+  }
+
+  async reorderQuestions(examId: number, questionIds: number[]) {
+    return this.request<Question[]>(`/exams/${examId}/questions/reorder/`, {
+      method: "POST",
+      body: JSON.stringify({ question_ids: questionIds }),
     });
   }
 
