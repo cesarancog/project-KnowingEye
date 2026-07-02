@@ -1,0 +1,6 @@
+# Computer vision stack for production pipeline (backend/ai/knowing_eye)
+numpy>=1.26
+opencv-python-headless>=4.9
+Pillow>=10.0
+PyYAML>=6.0
+mediapipe>=0.10.14

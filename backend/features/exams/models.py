@@ -5,6 +5,32 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 
+class Department(models.Model):
+    """Institutional department used for exam code generation."""
+
+    name = models.CharField(max_length=255, unique=True)
+    abbreviation = models.CharField(
+        max_length=16,
+        unique=True,
+        help_text="Short code used in exam identifiers (e.g. ENT, IIT)",
+    )
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "exams_department"
+        ordering = ["sort_order", "name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.abbreviation})"
+
+
+def _question_attachment_path(instance: "QuestionAttachment", filename: str) -> str:
+    return f"questions/{instance.question.exam_id}/{instance.question_id}/{filename}"
+
+
 class Exam(models.Model):
     """
     Exam model representing an examination.
@@ -43,6 +69,14 @@ class Exam(models.Model):
         validators=[MinValueValidator(0), MaxValueValidator(100)],
         help_text='Minimum passing percentage'
     )
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="exams",
+        help_text="Department that owns this exam (used for auto-generated codes)",
+    )
     exam_code = models.CharField(
         max_length=32,
         blank=True,
@@ -64,6 +98,10 @@ class Exam(models.Model):
         default=1,
         validators=[MinValueValidator(1)],
         help_text='Maximum completed attempts per examinee',
+    )
+    monitoring_enabled = models.BooleanField(
+        default=True,
+        help_text='When enabled, examinees complete proctoring setup and webcam monitoring during the exam',
     )
     status = models.CharField(
         max_length=20,
@@ -165,4 +203,31 @@ class Question(models.Model):
         """Update parent exam question count when question is saved."""
         super().save(*args, **kwargs)
         self.exam.update_question_count()
+
+
+class QuestionAttachment(models.Model):
+    """Media file attached to an exam question."""
+
+    class Kind(models.TextChoices):
+        IMAGE = "image", "Image"
+        PDF = "pdf", "PDF"
+        AUDIO = "audio", "Audio"
+
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+    file = models.FileField(upload_to=_question_attachment_path)
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    caption = models.CharField(max_length=255, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "exams_question_attachment"
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"Attachment {self.kind} for Q{self.question.order}"
 

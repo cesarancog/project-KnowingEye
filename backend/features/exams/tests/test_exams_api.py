@@ -1,10 +1,17 @@
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from features.exams.models import Exam, Question
+from features.exams.models import Department, Exam, Question, QuestionAttachment
 
 User = get_user_model()
+
+CSV_TEMPLATE = """question_text,question_type,options,correct_answer,points
+What is 2 + 2?,multiple_choice,3|4|5,4,1
+The earth is round.,true_false,,true,1
+Define photosynthesis in one sentence.,short_answer,,process by which plants make food,2
+"""
 
 
 class ExamsAPITests(APITestCase):
@@ -16,12 +23,16 @@ class ExamsAPITests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.client.force_authenticate(user=self.admin)
+        self.department = Department.objects.create(
+            name="Institute of Information Technology",
+            abbreviation="IIT",
+        )
         self.exam = Exam.objects.create(
             title="Sample Exam",
             description="Test",
             duration_minutes=30,
             passing_score=60,
-            status=Exam.Status.ACTIVE,
+            status=Exam.Status.DRAFT,
             created_by=self.admin,
         )
         Question.objects.create(
@@ -47,9 +58,56 @@ class ExamsAPITests(APITestCase):
                 "description": "Created in test",
                 "duration_minutes": 45,
                 "passing_score": 70,
+                "department_id": self.department.id,
                 "status": "draft",
             },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["title"], "New Exam")
+        self.assertIsNotNone(response.data["exam_code"])
+
+    def test_create_question_via_nested_route(self):
+        response = self.client.post(
+            f"/api/exams/{self.exam.id}/questions/",
+            {
+                "question_text": "Capital of France?",
+                "question_type": "multiple_choice",
+                "options": ["London", "Paris", "Berlin"],
+                "correct_answer": "Paris",
+                "points": 2,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["question_text"], "Capital of France?")
+
+    def test_import_questions_from_csv_template(self):
+        response = self.client.post(
+            f"/api/exams/{self.exam.id}/questions/import/",
+            {"csv": CSV_TEMPLATE},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["imported"], 3)
+
+    def test_list_questions_returns_admin_detail(self):
+        response = self.client.get(f"/api/exams/{self.exam.id}/questions/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data), 1)
+        self.assertIn("correct_answer", response.data[0])
+
+    def test_upload_question_attachment(self):
+        question = Question.objects.get(exam=self.exam)
+        png = SimpleUploadedFile("chart.png", b"\x89PNG\r\n\x1a\n", content_type="image/png")
+        response = self.client.post(
+            f"/api/exams/{self.exam.id}/questions/{question.id}/attachments/",
+            {"file": png},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["kind"], QuestionAttachment.Kind.IMAGE)
+        self.assertIn("url", response.data)
+
+        list_q = self.client.get(f"/api/exams/{self.exam.id}/questions/")
+        self.assertEqual(len(list_q.data[0]["attachments"]), 1)

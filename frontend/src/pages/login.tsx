@@ -4,6 +4,8 @@ import { Logo, InstitutionLogo } from "../shared/components/layout/logo";
 import { Eye, EyeOff, User, Lock, AlertCircle, Loader2 } from "lucide-react";
 import { useAuth } from "../core/providers/auth-provider";
 import { brand } from "../core/config/brand";
+import { formatApiError } from "../core/config/api";
+import { ProfilePhotoInput } from "../shared/components/common/profile-photo-input";
 
 export function Login() {
   const [showPassword, setShowPassword] = useState(false);
@@ -12,9 +14,12 @@ export function Login() {
   const [formData, setFormData] = useState({
     username: "",
     email: "",
+    firstName: "",
+    lastName: "",
     password: "",
     confirmPassword: "",
   });
+  const [profilePhoto, setProfilePhoto] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -53,6 +58,14 @@ export function Login() {
         const user = await login(formData.username, formData.password);
         goHome(user.role);
       } else {
+        if (!formData.firstName.trim() || !formData.lastName.trim()) {
+          setError("First name and last name are required");
+          return;
+        }
+        if (!profilePhoto) {
+          setError("A profile photo is required");
+          return;
+        }
         if (formData.password !== formData.confirmPassword) {
           setError("Passwords do not match");
           return;
@@ -66,12 +79,15 @@ export function Login() {
           email: formData.email,
           password: formData.password,
           password2: formData.confirmPassword,
+          first_name: formData.firstName.trim(),
+          last_name: formData.lastName.trim(),
+          avatar: profilePhoto!,
           role,
         });
         goHome(user.role);
       }
-    } catch (err: any) {
-      setError(err?.detail?.() ?? err?.message ?? "An error occurred");
+    } catch (err: unknown) {
+      setError(formatApiError(err, "An error occurred"));
     } finally {
       setIsSubmitting(false);
     }
@@ -160,6 +176,50 @@ export function Login() {
                 </div>
               </div>
             )}
+
+            {!isLogin && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="firstName" className="block text-sm mb-2">
+                      First name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="firstName"
+                      name="firstName"
+                      type="text"
+                      value={formData.firstName}
+                      onChange={handleInputChange}
+                      placeholder="Your first name"
+                      className="form-field w-full px-4 py-3"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="lastName" className="block text-sm mb-2">
+                      Last name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="lastName"
+                      name="lastName"
+                      type="text"
+                      value={formData.lastName}
+                      onChange={handleInputChange}
+                      placeholder="Your last name"
+                      className="form-field w-full px-4 py-3"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <ProfilePhotoInput
+                  value={profilePhoto}
+                  onChange={setProfilePhoto}
+                  disabled={isSubmitting}
+                />
+              </>
+            )}
+
             <div>
               {/* Username */}
               <label htmlFor="username" className="block text-sm mb-2">
@@ -174,7 +234,7 @@ export function Login() {
                   value={formData.username}
                   onChange={handleInputChange}
                   placeholder="Enter your username"
-                  className="w-full pl-10 pr-4 py-3 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="form-field w-full pl-10 pr-4 py-3"
                   required
                 />
               </div>
@@ -194,7 +254,7 @@ export function Login() {
                     value={formData.email}
                     onChange={handleInputChange}
                     placeholder="Enter your email"
-                    className="w-full pl-4 pr-4 py-3 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="form-field w-full px-4 py-3"
                     required
                   />
                 </div>
@@ -215,7 +275,7 @@ export function Login() {
                   value={formData.password}
                   onChange={handleInputChange}
                   placeholder="Enter your password"
-                  className="w-full pl-10 pr-12 py-3 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="form-field w-full pl-10 pr-12 py-3"
                   required
                 />
                 <button
@@ -247,7 +307,7 @@ export function Login() {
                     value={formData.confirmPassword}
                     onChange={handleInputChange}
                     placeholder="Confirm your password"
-                    className="w-full pl-10 pr-4 py-3 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="form-field w-full pl-10 pr-4 py-3"
                     required
                   />
                 </div>

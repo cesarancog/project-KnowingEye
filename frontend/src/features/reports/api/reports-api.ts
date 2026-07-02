@@ -1,5 +1,5 @@
 /**
- * Reports feature API — typed wrappers over the shared API client.
+ * Reports feature API - typed wrappers over the shared API client.
  */
 import { apiClient } from "../../../core/config/api";
 
@@ -19,6 +19,10 @@ export function fetchTimeseries() {
   return apiClient.getTimeseries();
 }
 
-export function sessionsCsvUrl() {
-  return apiClient.exportSessionsCSV();
+export async function downloadSessionsCsv() {
+  return apiClient.downloadSessionsCSV();
+}
+
+export async function downloadSessionsPdf() {
+  return apiClient.downloadSessionsPDF();
 }

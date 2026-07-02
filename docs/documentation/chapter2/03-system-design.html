@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Part C - System Design · Knowing Eye</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../../os/assets/styles.css" />
+  <link rel="stylesheet" href="assets/manuscript.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script defer src="assets/mermaid-init.js"></script>
+</head>
+<body>
+  <main class="doc-wrap">
+    <div class="doc-nav">
+      <a class="btn btn-sm" href="02-system-analysis.html">← Part B</a>
+      <a class="btn btn-sm" href="04-system-testing.html">Part D - System Testing →</a>
+    </div>
+    <p class="doc-eyebrow">Chapter II · <span class="part-badge">Part C</span></p>
+    <h1>System Design</h1>
+    <p class="doc-lead">Database structure, data dictionary, and the technologies, models, and algorithms used for data collection through classification in the Knowing Eye platform.</p>
+
+    <h2 id="erd">Entity-Relationship Diagram (ERD)</h2>
+    <p>Knowing Eye uses a <strong>relational SQL database</strong> (SQLite in development, PostgreSQL in production). The ERD reflects Django models under <code>backend/features/</code>.</p>
+    <figure class="doc-fig">
+      <figcaption>Figure 2.5 - Entity-Relationship Diagram</figcaption>
+      <pre class="mermaid">
+erDiagram
+  AUTHENTICATION_USER ||--o{ EXAMS_EXAM : creates
+  AUTHENTICATION_USER ||--o{ EXAM_SESSION : takes
+  EXAMS_EXAM ||--o{ EXAMS_QUESTION : contains
+  EXAMS_EXAM ||--o{ EXAM_SESSION : has
+  EXAM_SESSION ||--o{ RESPONSE : has
+  EXAMS_QUESTION ||--o{ RESPONSE : answered_by
+  EXAM_SESSION ||--o{ SESSION_LOG : logs
+  EXAM_SESSION ||--o{ BEHAVIOR_LOG : monitors
+  EXAM_SESSION ||--o{ BEHAVIOR_ALERT : triggers
+  EXAM_SESSION ||--o| IDENTITY_REFERENCE : enrolls
+  AUTHENTICATION_USER {
+    int id PK
+    string username UK
+    string email UK
+    string role
+    string password
+  }
+  EXAMS_EXAM {
+    int id PK
+    string title
+    int duration_minutes
+    int passing_score
+    string status
+    int created_by_id FK
+  }
+  EXAMS_QUESTION {
+    int id PK
+    int exam_id FK
+    text question_text
+    string question_type
+    json options
+  }
+  EXAM_SESSION {
+    uuid id PK
+    int exam_id FK
+    int user_id FK
+    string status
+    datetime started_at
+    decimal percentage_score
+  }
+  BEHAVIOR_LOG {
+    uuid id PK
+    uuid session_id FK
+    string event_type
+    float score
+    json metadata
+  }
+  BEHAVIOR_ALERT {
+    uuid id PK
+    uuid session_id FK
+    string severity
+    boolean resolved
+  }
+      </pre>
+      <details class="graph-source"><summary>DBML source (export to PNG via dbdiagram.io)</summary>
+        <p style="padding:0.4rem 0;font-size:0.85rem"><a href="assets/graphs/database-erd.dbml" target="_blank">assets/graphs/database-erd.dbml</a></p>
+      </details>
+    </figure>
+
+    <h2 id="json-schema">JSON Schema Diagram</h2>
+    <div class="note">
+      <strong>Omitted.</strong> Knowing Eye persists structured data in SQL tables via the Django ORM. JSON fields (<code>options</code>, <code>metadata</code>, <code>embedding</code>) are embedded columns validated at the application layer, not standalone JSON document stores. Per capstone guidelines, JSON Schema diagrams are omitted for SQL-based databases.
+    </div>
+    <p>The API response contract for frame analysis (used by the frontend and WebSocket) follows this structure:</p>
+    <pre><code>{
+  "metrics": { "face_presence_pct", "gaze_focus_pct", "posture_compliance_pct",
+               "identity_match_pct", "object_clear_pct", "overall_compliance_pct" },
+  "events": [{ "event_type", "score_pct", "confidence_pct", "metadata" }],
+  "alerts": [{ "type", "severity", "message", "metric_pct" }]
+}</code></pre>
+
+    <h2 id="data-dictionary">Data Dictionary</h2>
+    <h3>authentication_user</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Field</th><th>Type</th><th>Constraints</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>id</td><td>INTEGER</td><td>PK, auto</td><td>Unique user identifier</td></tr>
+        <tr><td>username</td><td>VARCHAR(150)</td><td>UNIQUE, NOT NULL</td><td>Login username</td></tr>
+        <tr><td>email</td><td>VARCHAR(254)</td><td>UNIQUE, NOT NULL</td><td>Contact email</td></tr>
+        <tr><td>password</td><td>VARCHAR(128)</td><td>NOT NULL</td><td>Hashed password (PBKDF2)</td></tr>
+        <tr><td>role</td><td>VARCHAR(20)</td><td>ADMIN | EXAMINEE</td><td>RBAC role</td></tr>
+        <tr><td>is_active</td><td>BOOLEAN</td><td>DEFAULT true</td><td>Account enabled flag</td></tr>
+        <tr><td>created_at, updated_at</td><td>DATETIME</td><td>auto</td><td>Audit timestamps</td></tr>
+      </tbody>
+    </table></div>
+    <h3>exams_exam &amp; exams_question</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Field</th><th>Type</th><th>Constraints</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>exam.title</td><td>VARCHAR(255)</td><td>NOT NULL</td><td>Exam name</td></tr>
+        <tr><td>exam.duration_minutes</td><td>INTEGER</td><td>DEFAULT 120</td><td>Time limit</td></tr>
+        <tr><td>exam.passing_score</td><td>INTEGER</td><td>0–100</td><td>Minimum % to pass</td></tr>
+        <tr><td>exam.status</td><td>VARCHAR(20)</td><td>draft | active | archived</td><td>Lifecycle state</td></tr>
+        <tr><td>question.question_type</td><td>VARCHAR(20)</td><td>MCQ, T/F, etc.</td><td>Answer format</td></tr>
+        <tr><td>question.options</td><td>JSON</td><td>DEFAULT []</td><td>MCQ choices</td></tr>
+        <tr><td>question.correct_answer</td><td>TEXT</td><td>NOT NULL</td><td>Scoring key</td></tr>
+      </tbody>
+    </table></div>
+    <h3>exam_session, responses, logs, behavior &amp; identity</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Table</th><th>Key Fields</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>exam_session</td><td>id (UUID), exam_id, user_id, status, percentage_score, passed</td><td>Timed attempt; UUID used in WebSocket URL</td></tr>
+        <tr><td>responses</td><td>session_id, question_id, answer_text, is_correct, time_spent</td><td>Per-question answers</td></tr>
+        <tr><td>session_logs</td><td>session_id, event_type, details, timestamp</td><td>Lifecycle audit (started, submitted, terminated)</td></tr>
+        <tr><td>behavior_log</td><td>session_id, event_type, score, confidence, metadata</td><td>AI-detected behavioral events</td></tr>
+        <tr><td>behavior_alert</td><td>session_id, alert_type, severity, resolved</td><td>Flagged integrity violations</td></tr>
+        <tr><td>monitoring_identity_reference</td><td>session_id (1:1), embedding (JSON), backend</td><td>Enrolled face vector for identity verification</td></tr>
+      </tbody>
+    </table></div>
+    <p class="doc-lead" style="font-size:0.85rem">Full dictionary in <code>database/database_schema.json</code> and Django models under <code>backend/features/</code>.</p>
+
+    <h2 id="technologies">Technologies, Concepts, and Theories</h2>
+    <p>The platform follows a classical computer-vision pipeline—<strong>data collection → preprocessing → feature extraction → classification/scoring</strong>—embedded in a full-stack web architecture. Technologies are grouped by layer; each entry notes where it is applied in Knowing Eye.</p>
+
+    <h3>Frontend</h3>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/react.svg" alt="React logo" width="64" height="64" /></figure>
+        <div><h3>React 18 + Vite 6</h3><p>Single-page application shell. Powers the exam-taking flow (<code>exam-taking-backend.tsx</code>), live monitoring dashboard (<code>monitoring.tsx</code>, <code>session-monitor.tsx</code>), exam builder, and admin reports.</p></div>
+      </article>
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/typescript.svg" alt="TypeScript logo" width="64" height="64" /></figure>
+        <div><h3>TypeScript</h3><p>Static typing across <code>frontend/src/</code>. Enforces API contracts in <code>core/config/api.ts</code> and feature modules (auth, exams, monitoring, reports).</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>React Router 7</h3><p>Client-side routing with role-gated pages via <code>protected-route.tsx</code>—admin routes (exam builder, monitoring) vs. examinee routes (dashboard, exam session).</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>TanStack React Query</h3><p>Server-state caching for reports and session lists (<code>features/reports/hooks/</code>), reducing redundant REST calls on the dashboard.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Tailwind CSS 4 + Radix UI (shadcn/ui)</h3><p>Design system in <code>shared/components/ui/</code>—forms, dialogs, tables, and charts used across login, exam setup, and monitoring views.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Browser Media APIs</h3><p><code>getUserMedia()</code>, Canvas JPEG encoding, and WebSocket in <code>shared/hooks/use-monitoring.ts</code> capture and stream ~1 FPS webcam frames during an exam session.</p></div>
+      </article>
+    </div>
+
+    <h3>Backend</h3>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/django.svg" alt="Django logo" width="64" height="64" /></figure>
+        <div><h3>Django 6 + DRF</h3><p>Feature-based modular monolith under <code>backend/features/</code>—authentication, exams, session lifecycle, monitoring REST fallback, behavior logs, and PDF reports.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Django Channels + Daphne (ASGI)</h3><p>Real-time WebSocket consumers at <code>/ws/monitoring/{session_id}/</code> receive frames, invoke the AI adapter, and broadcast alerts to admin observers.</p></div>
+      </article>
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/postgresql.svg" alt="PostgreSQL logo" width="64" height="64" /></figure>
+        <div><h3>PostgreSQL / SQLite</h3><p>Relational persistence via Django ORM. SQLite in local development; PostgreSQL 15+ in production for users, exams, sessions, behavior logs, and identity embeddings.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Redis + channels-redis</h3><p>Production channel layer for multi-worker WebSocket broadcast—keeps live alert notifications synchronized when Daphne is scaled horizontally.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>ReportLab</h3><p>Generates downloadable PDF exam and session reports from <code>features/reports/views.py</code>.</p></div>
+      </article>
+    </div>
+
+    <h3>AI / Computer Vision</h3>
+    <p class="doc-lead" style="font-size:0.9rem;margin-bottom:0.8rem">Production pipeline: <code>backend/ai/knowing_eye/</code>, integrated through <code>backend/ai/adapter.py</code>. Pre-trained benchmark accuracies below are from published model evaluations; project-specific UAT metrics are tracked in Part D.</p>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/mediapipe.svg" alt="MediaPipe logo" width="64" height="64" /></figure>
+        <div><h3>MediaPipe Face &amp; Pose</h3><p><strong>In project:</strong> <code>face_detector.py</code> and <code>pose_detector.py</code> extract 468 face landmarks, head yaw/pitch, and body keypoints for gaze and posture scoring.<br><strong>Accuracy:</strong> Face detection ~98% precision on frontal faces; pose landmark PCK@0.2 ~95% on visible joints (Google benchmarks).</p></div>
+      </article>
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/arcface.svg" alt="ArcFace logo" width="64" height="64" /></figure>
+        <div><h3>ArcFace / InsightFace (<code>buffalo_l</code>)</h3><p><strong>In project:</strong> <code>arcface_backend.py</code> produces 512-D embeddings; enrolled at exam start and verified each frame via cosine distance (<code>identity_match_threshold: 0.42</code> in <code>pipeline.yaml</code>).<br><strong>Accuracy:</strong> LFW 99.77%, CFP-FP 98.56%, AgeDB-30 98.18% (InsightFace model zoo).</p></div>
+      </article>
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/yolo.svg" alt="YOLO logo" width="64" height="64" /></figure>
+        <div><h3>YOLOv8n (Ultralytics)</h3><p><strong>In project:</strong> Detects persons and prohibited objects (COCO class 67: cell phone) to feed <code>object_clear_pct</code> in the monitoring API schema; configured in <code>pipeline.yaml</code> and <code>assets/graphs/ai-pipeline-component.json</code>.<br><strong>Accuracy:</strong> mAP@50-95 37.3%, mAP@50 52.0% on COCO val (YOLOv8n official benchmark).</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>OpenCV + NumPy</h3><p><strong>In project:</strong> <code>preprocessing/frame.py</code> handles BGR conversion, resize (≤640 px), denoise, and YCbCr histogram equalization before inference.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Threshold-based behavior classifier</h3><p><strong>In project:</strong> <code>behavior/scoring.py</code> and <code>behavior/temporal.py</code> map detections to 0–100% compliance metrics, rule-based event flags, and sliding-window suspicious-pattern alerts.</p></div>
+      </article>
+    </div>
+
+    <h3>Deployment / Server</h3>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <div><h3>Nginx</h3><p>Reverse proxy in production—TLS termination, SPA static hosting (<code>frontend/dist</code>), REST proxy to <code>/api/</code>, and WebSocket upgrade on <code>/ws/</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Daphne / Uvicorn (ASGI)</h3><p>Serves the Django ASGI application (<code>core/config/asgi.py</code>) on port 8000; managed via systemd in production (<code>docs/deployment.md</code>).</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Let's Encrypt TLS</h3><p>HTTPS/WSS certificates for secure browser camera access (requires secure context) and encrypted API traffic.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Optional CUDA GPU</h3><p>Accelerates YOLO inference on the server when available; CPU fallback via ONNX Runtime for ArcFace.</p></div>
+      </article>
+    </div>
+
+    <h3>Tools / Platforms</h3>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <figure class="tech-visual"><img src="assets/tech/vscode.svg" alt="Visual Studio Code logo" width="64" height="64" /></figure>
+        <div><h3>Visual Studio Code / Cursor</h3><p>Primary IDE for Python backend and TypeScript frontend development, debugging, and integrated Git workflows.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Git + GitHub</h3><p>Version control and collaboration. GitHub Actions validates and deploys the Project OS documentation site on push to <code>main</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Vitest + Django Test Runner</h3><p>Frontend unit tests (<code>frontend/src/**/*.test.ts</code>); backend API, WebSocket, and AI pipeline tests under <code>backend/features/*/tests/</code> and <code>backend/ai/tests/</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>SheetJS (xlsx)</h3><p>Bulk question import in the exam builder—admins upload a filled <code>.xlsx</code> worksheet parsed by <code>features/exams/lib/</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>Tremor React</h3><p>Bar, line, and donut charts on the reports page (<code>pages/reports.tsx</code>) for session and violation summaries.</p></div>
+      </article>
+    </div>
+
+    <h3>Security</h3>
+    <div class="grid" style="gap:0.9rem">
+      <article class="tech-card">
+        <div><h3>PBKDF2 password hashing</h3><p>Django's default hasher stores credentials in <code>authentication_user.password</code>—never in plaintext.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>JWT (SimpleJWT, HS256)</h3><p>Access + refresh tokens issued at <code>/api/auth/token/</code>; auto-refreshed by <code>frontend/src/core/config/api.ts</code>. WebSocket auth via query-string token in <code>JWTAuthMiddleware</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>RBAC</h3><p>Role-based access (<code>ADMIN</code> | <code>EXAMINEE</code>) enforced on REST endpoints and UI routes—draft exams and admin dashboards are hidden from examinees.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>TLS, HSTS &amp; secure cookies</h3><p>Production settings (<code>settings/production.py</code>) enable <code>SECURE_SSL_REDIRECT</code>, HSTS, HttpOnly/Secure cookies, and <code>X-Frame-Options: DENY</code> when <code>DEBUG=False</code>.</p></div>
+      </article>
+      <article class="tech-card">
+        <div><h3>CORS whitelist</h3><p><code>CORS_ALLOWED_ORIGINS</code> restricts API access to the deployed SPA origin; credentials are allowed only from trusted domains.</p></div>
+      </article>
+    </div>
+
+    <h3>CV Pipeline Stages</h3>
+    <div class="two-col">
+      <div class="card"><h4>1. Data Collection</h4><p class="muted" style="font-size:0.9rem">Browser <code>getUserMedia()</code> captures webcam video; canvas encodes JPEG/base64 at ~1 FPS. Transport: WebSocket <code>/ws/monitoring/{session_id}/</code> (REST <code>/api/monitoring/frame/</code> fallback).</p></div>
+      <div class="card"><h4>2. Pre-processing</h4><p class="muted" style="font-size:0.9rem">Base64 → BGR; resize to ≤640px; optional denoise; YCbCr histogram equalization. Config: <code>backend/ai/config/pipeline.yaml</code>.</p></div>
+      <div class="card"><h4>3. Feature Extraction</h4><p class="muted" style="font-size:0.9rem">MediaPipe (468 face landmarks, head yaw/pitch, posture ratios), YOLOv8 object detections, ArcFace identity embedding.</p></div>
+      <div class="card"><h4>4. Classification &amp; Scoring</h4><p class="muted" style="font-size:0.9rem">Threshold-based 0–100% metrics, rule-based event flags, sliding-window temporal patterns, and weighted aggregation into <code>overall_compliance_pct</code>.</p></div>
+    </div>
+
+    <div class="doc-nav" style="margin-top:2.5rem">
+      <a class="btn btn-sm" href="02-system-analysis.html">← Part B</a>
+      <a class="btn-primary btn-sm" href="04-system-testing.html">Part D - System Testing →</a>
+    </div>
+  </main>
+</body>
+</html>

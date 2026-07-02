@@ -1,13 +1,70 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
-from .models import Exam, Question
+from .models import Department, Exam, Question, QuestionAttachment
 
 User = get_user_model()
 
 
+class DepartmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Department
+        fields = [
+            "id",
+            "name",
+            "abbreviation",
+            "is_active",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_abbreviation(self, value):
+        normalized = (value or "").strip().upper()
+        if not normalized:
+            raise serializers.ValidationError("Abbreviation is required.")
+        if not normalized.isalnum():
+            raise serializers.ValidationError(
+                "Abbreviation may only contain letters and numbers."
+            )
+        return normalized
+
+    def validate_name(self, value):
+        normalized = (value or "").strip()
+        if not normalized:
+            raise serializers.ValidationError("Name is required.")
+        return normalized
+
+
+class DepartmentSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Department
+        fields = ["id", "name", "abbreviation"]
+        read_only_fields = fields
+
+
+class QuestionAttachmentSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuestionAttachment
+        fields = ["id", "kind", "url", "caption", "order", "created_at"]
+        read_only_fields = fields
+
+    def get_url(self, obj) -> str | None:
+        if not obj.file:
+            return None
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+
 class QuestionTakeSerializer(serializers.ModelSerializer):
-    """Examinee-safe question payload — no answer key."""
+    """Examinee-safe question payload - no answer key."""
+
+    attachments = QuestionAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Question
@@ -18,12 +75,15 @@ class QuestionTakeSerializer(serializers.ModelSerializer):
             "options",
             "points",
             "order",
+            "attachments",
         ]
         read_only_fields = fields
 
 
 class QuestionSerializer(serializers.ModelSerializer):
-    """Serializer for Question model (admin — includes answer key)."""
+    """Serializer for Question model (admin - includes answer key)."""
+
+    attachments = QuestionAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Question
@@ -36,6 +96,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "correct_answer",
             "points",
             "order",
+            "attachments",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -45,6 +106,7 @@ class QuestionDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer for Question with all fields."""
 
     exam_title = serializers.CharField(source="exam.title", read_only=True)
+    attachments = QuestionAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Question
@@ -58,6 +120,7 @@ class QuestionDetailSerializer(serializers.ModelSerializer):
             "correct_answer",
             "points",
             "order",
+            "attachments",
             "created_at",
             "updated_at",
         ]
@@ -136,6 +199,7 @@ class ExamListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
     question_count = serializers.SerializerMethodField()
     is_open = serializers.SerializerMethodField()
+    department = DepartmentSummarySerializer(read_only=True)
 
     class Meta:
         model = Exam
@@ -143,6 +207,7 @@ class ExamListSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "exam_code",
+            "department",
             "duration_minutes",
             "total_questions",
             "passing_score",
@@ -150,6 +215,7 @@ class ExamListSerializer(serializers.ModelSerializer):
             "available_from",
             "available_until",
             "max_attempts",
+            "monitoring_enabled",
             "is_open",
             "created_by_name",
             "created_at",
@@ -174,10 +240,11 @@ class ExamListSerializer(serializers.ModelSerializer):
 
 
 class ExamTakeSerializer(serializers.ModelSerializer):
-    """Examinee-safe exam detail — questions without answer keys."""
+    """Examinee-safe exam detail - questions without answer keys."""
 
     questions = QuestionTakeSerializer(many=True, read_only=True)
     is_open = serializers.SerializerMethodField()
+    department = DepartmentSummarySerializer(read_only=True)
 
     class Meta:
         model = Exam
@@ -187,6 +254,7 @@ class ExamTakeSerializer(serializers.ModelSerializer):
             "description",
             "instructions",
             "exam_code",
+            "department",
             "duration_minutes",
             "total_questions",
             "passing_score",
@@ -194,6 +262,7 @@ class ExamTakeSerializer(serializers.ModelSerializer):
             "available_from",
             "available_until",
             "max_attempts",
+            "monitoring_enabled",
             "is_open",
             "questions",
         ]
@@ -212,6 +281,7 @@ class ExamDetailSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
     created_by_email = serializers.CharField(source="created_by.email", read_only=True)
     publish_readiness = serializers.SerializerMethodField()
+    department = DepartmentSummarySerializer(read_only=True)
 
     class Meta:
         model = Exam
@@ -221,6 +291,7 @@ class ExamDetailSerializer(serializers.ModelSerializer):
             "description",
             "instructions",
             "exam_code",
+            "department",
             "duration_minutes",
             "total_questions",
             "passing_score",
@@ -228,6 +299,7 @@ class ExamDetailSerializer(serializers.ModelSerializer):
             "available_from",
             "available_until",
             "max_attempts",
+            "monitoring_enabled",
             "created_by",
             "created_by_name",
             "created_by_email",
@@ -256,6 +328,13 @@ class ExamCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for creating and updating exams."""
 
     max_attempts = serializers.IntegerField(required=False, default=1, min_value=1)
+    department = DepartmentSummarySerializer(read_only=True)
+    department_id = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.filter(is_active=True),
+        source="department",
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = Exam
@@ -265,14 +344,17 @@ class ExamCreateUpdateSerializer(serializers.ModelSerializer):
             "description",
             "instructions",
             "exam_code",
+            "department",
+            "department_id",
             "duration_minutes",
             "passing_score",
             "available_from",
             "available_until",
             "max_attempts",
+            "monitoring_enabled",
             "status",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = ["id", "exam_code"]
 
     def validate_duration_minutes(self, value):
         if value < 1:
@@ -297,17 +379,29 @@ class ExamCreateUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"available_until": "End time must be after the start time."}
             )
-        code = attrs.get("exam_code")
-        if code == "":
-            attrs["exam_code"] = None
         if attrs.get("max_attempts") in (None, ""):
             attrs["max_attempts"] = 1
+
+        department = attrs.get("department")
+        if self.instance is None and not department:
+            raise serializers.ValidationError(
+                {"department_id": "Select a department to create an exam."}
+            )
+        if self.instance is not None and department is not None:
+            if self.instance.department_id and department.id != self.instance.department_id:
+                raise serializers.ValidationError(
+                    {"department_id": "Department cannot be changed after creation."}
+                )
         return attrs
 
     def create(self, validated_data):
+        from . import services
+
         validated_data.setdefault("max_attempts", 1)
         validated_data.setdefault("description", "")
         validated_data.setdefault("instructions", "")
+        department = validated_data["department"]
+        validated_data["exam_code"] = services.generate_exam_code(department)
         return super().create(validated_data)
 
 

@@ -6,11 +6,13 @@ from typing import Generic, TypeVar
 
 from shared.repositories.base_repository import BaseRepository, ModelT
 
-RepoT = TypeVar("RepoT", bound=BaseRepository[ModelT])
+RepoT = TypeVar("RepoT", bound=BaseRepository)
 
 
 class BaseService(Generic[ModelT, RepoT]):
-    """Thin base service that wraps a repository."""
+    """Thin base service wrapping a repository for CRUD operations."""
+
+    repository: RepoT
 
     def __init__(self, repository: RepoT):
         self.repository = repository

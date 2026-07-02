@@ -18,7 +18,7 @@ with real-time computer-vision behavior analysis for examination integrity.
 ```text
 project-KnowingEye/
 ├── backend/                 Django REST + Channels API
-│   ├── ai/                  Adapter bridging Django ↔ pipeline_playground
+│   ├── ai/                  Production CV pipeline (knowing_eye) + adapter
 │   ├── core/                Settings, ASGI/WSGI, exceptions, management
 │   └── features/            authentication, exams, session, monitoring, behavior, reports
 ├── frontend/                React + Vite UI
@@ -26,15 +26,26 @@ project-KnowingEye/
 │       ├── core/            providers, router, api client, env
 │       ├── pages/           home, login, dashboard, monitoring, reports, profile, …
 │       └── shared/          components, hooks (use-monitoring), utilities
-├── pipeline_playground/     Installable CV/AI module (YOLO + MediaPipe + scoring)
-│   ├── knowing_eye/         preprocessing/detection/recognition/behavior packages
-│   ├── api/                 FastAPI standalone playground (optional)
-│   └── config/pipeline.yaml Thresholds & model paths
-├── docs/                    Architecture, WBS, IEEE / UTAUT testing packs
+├── docs/                    Architecture, deployment, IEEE / UTAUT testing (Knowing Eye)
+├── misc/                    Archived artifacts & dead code (see misc/README.md)
+├── REPOSITORY_GUIDE.md      Contributor map - start here if new to the repo
+├── start-setup.cmd          One-time setup after cloning (Windows)
 └── start-dev.cmd            One-click dev bootstrap (Windows)
 ```
 
 ## Quick start (Windows)
+
+### First time (after cloning)
+
+Double-click `start-setup.cmd` at the repo root. It will:
+
+1. Create `backend/venv/` and install Python dependencies (including the CV stack)
+2. Run database migrations and seed demo data
+3. Run `npm install` in `frontend/` and create `.env.local` if missing
+
+This can take several minutes on first run while large packages (OpenCV, etc.) download.
+
+### Every day
 
 Double-click `start-dev.cmd` at the repo root. This boots:
 
@@ -43,12 +54,19 @@ Double-click `start-dev.cmd` at the repo root. This boots:
 
 ### Manual
 
+**First time only** - install Python dependencies (creates `backend/venv/`):
+
+```powershell
+cd backend
+.\setup-venv.cmd
+```
+
+Or from the repo root: `.\start-setup.cmd` (also migrates, seeds, and installs the frontend).
+
 ```powershell
 # --- 1. Backend ---
 cd backend
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\venv\Scripts\Activate.ps1          # skip if you used setup-venv.cmd
 $env:DB_ENGINE = "django.db.backends.sqlite3"
 python manage.py migrate
 python manage.py seed_db --noinput      # first run only
@@ -95,19 +113,20 @@ npm run dev
 | GET    | `/api/reports/sessions/{uuid}/`                       | Full session report                      |
 | GET    | `/api/reports/timeseries/`                            | Per-day activity                         |
 | GET    | `/api/reports/export/csv/`                            | CSV download                             |
+| GET    | `/api/reports/export/pdf/`                            | PDF download                             |
 | WS     | `/ws/monitoring/{uuid}/?token={jwt-access}`           | Live monitoring (frame stream + alerts)  |
 
 The WebSocket protocol is documented in `backend/features/monitoring/consumers.py`.
 
 ## Computer-Vision pipeline
 
-`backend/ai/adapter.py` lazily loads `pipeline_playground/knowing_eye`. If the
-ML dependencies aren't present it falls back to a deterministic stub so the
+`backend/ai/adapter.py` loads the production pipeline from `backend/ai/knowing_eye`.
+If ML dependencies aren't present it falls back to a deterministic stub so the
 monitoring API contract is always honoured.
 
 ```text
 Webcam ► JPEG/base64 ► /api/monitoring/frame/ (REST) or /ws/monitoring/* (WebSocket)
-       ► ai.adapter.analyze_frame_bgr()  ← pipeline_playground.BehaviorPipeline
+       ► ai.adapter.analyze_frame_bgr()  ← backend/ai/knowing_eye.BehaviorPipeline
        ► metrics + events + alerts ► persisted via features.behavior.services
 ```
 
@@ -116,16 +135,17 @@ Webcam ► JPEG/base64 ► /api/monitoring/frame/ (REST) or /ws/monitoring/* (We
 ```powershell
 cd backend
 .\venv\Scripts\Activate.ps1
-pip install mediapipe ultralytics PyYAML
-# optional identity verification (Windows requires Visual C++ build tools):
-pip install -r ../pipeline_playground/requirements-identity.txt
+pip install -r requirements-cv.txt
+# optional ArcFace identity verification (Windows may need Visual C++ build tools):
+pip install -r requirements-identity.txt
 ```
 
-When all three are present the adapter switches from `stub` → `playground`.
+When dependencies load successfully the adapter runs in **`production`** mode
+(stub otherwise).
 
 ### Tune thresholds
 
-Edit `pipeline_playground/config/pipeline.yaml` — values control compliance
+Edit `backend/ai/config/pipeline.yaml` - values control preprocessing, compliance
 thresholds, alert severities, and metric weights. The adapter picks the file up
 automatically on next process start.
 
@@ -138,14 +158,15 @@ $env:OPENBLAS_NUM_THREADS = "1"
 python manage.py test features
 ```
 
-Currently 23 tests across:
+Currently **32 tests** across:
 
-* `features.authentication` — JWT, registration, profile, password change, refresh
-* `features.exams` — CRUD, publish/archive
-* `features.session` — start, submit, lifecycle
-* `features.monitoring` — REST frame, enroll, **WebSocket consumer**, RBAC
-* `features.behavior` — logs + alerts persistence
-* `features.reports` — summary, detail, CSV export, timeseries
+* `features.authentication` - JWT, registration, profile, password change, refresh
+* `features.exams` - CRUD, publish/archive
+* `features.session` - start, submit, lifecycle
+* `features.monitoring` - REST frame, enroll, **WebSocket consumer**, RBAC
+* `features.behavior` - logs + alerts persistence
+* `features.reports` - summary, detail, CSV export, timeseries
+* `ai.tests` - production CV pipeline unit tests
 
 ## Production deployment
 
@@ -160,11 +181,12 @@ See [docs/deployment.md](docs/deployment.md) for the full guide. Highlights:
 
 ## Documentation
 
+* **Repository guide:** [REPOSITORY_GUIDE.md](REPOSITORY_GUIDE.md)
 * **Implementation status:** [docs/general/Implementation_Status_Summary.md](docs/general/Implementation_Status_Summary.md)
 * **WBS:** [docs/general/workflow.tree](docs/general/workflow.tree)
 * **Deployment:** [docs/deployment.md](docs/deployment.md)
-* **Pipeline integration:** [pipeline_playground/README.md](pipeline_playground/README.md)
+* **CV training:** [backend/ai/training/TRAINING.md](backend/ai/training/TRAINING.md)
 
 ## Team
 
-Legacy College of Compostela — Institute of Information Technology (capstone).
+Legacy College of Compostela - Institute of Information Technology (capstone).

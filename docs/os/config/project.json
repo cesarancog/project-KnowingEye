@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "project": {
+    "title": "Knowing Eye",
+    "slug": "knowing-eye",
+    "full_title": "Knowing Eye: A Web-Based Examination Platform with Behavior Monitoring Using Facial and Postural Analysis",
+    "type": "Capstone Project",
+    "seed_version": 6
+  },
+  "deployment": {
+    "base_path": "",
+    "hosting": "github-pages",
+    "default_branch": "main"
+  },
+  "theme": {
+    "default": "dark",
+    "accent": "#5b8def"
+  },
+  "institution": {
+    "name": "Legacy College of Compostela",
+    "department": "Institute of Information Technology",
+    "location": "Compostela, Davao de Oro, Philippines"
+  },
+  "advisor": {
+    "name": "Lorjohn Raña",
+    "title": "Project Adviser"
+  },
+  "dates": {
+    "started": "2026-04-16",
+    "target": "2026-07-04"
+  },
+  "version_label": "June 2026 · simplified OS",
+  "modules": [
+    { "id": "dashboard", "label": "Dashboard", "icon": "grid", "enabled": true, "path": "./modules/dashboard/module.js" },
+    { "id": "gantt", "label": "Gantt Chart", "icon": "timeline", "enabled": true, "path": "./modules/gantt/module.js" },
+    { "id": "wbs", "label": "WBS", "icon": "tree", "enabled": true, "path": "./modules/wbs/module.js" },
+    { "id": "team", "label": "Team", "icon": "users", "enabled": true, "path": "./modules/team/module.js" },
+    { "id": "milestones", "label": "Milestones", "icon": "flag", "enabled": true, "path": "./modules/milestones/module.js" },
+    { "id": "documents", "label": "Documentation", "icon": "book", "enabled": true, "path": "./modules/documents/module.js" },
+    { "id": "settings", "label": "Settings", "icon": "gear", "enabled": true, "path": "./modules/settings/module.js" }
+  ]
+}

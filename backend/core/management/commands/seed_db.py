@@ -8,21 +8,10 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
-from features.exams.models import Exam, Question
+from features.exams.models import Department, Exam, Question
 from features.session.models import ExamSession, Response
-
-
-def models_q_in_exams_or_users(exam_ids, user_ids):
-    """Build a Q for sessions belonging to any seeded exam or user."""
-    q = Q(pk__in=[])
-    if exam_ids:
-        q |= Q(exam_id__in=exam_ids)
-    if user_ids:
-        q |= Q(user_id__in=user_ids)
-    return q
 
 
 class Command(BaseCommand):
@@ -58,10 +47,12 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             self.load_users(data_dir)
+            self.load_departments(data_dir)
             self.load_exams(data_dir)
             self.load_questions(data_dir)
             self.load_sessions(data_dir)
             self.load_responses(data_dir)
+            self.reset_sequences()
 
         self.stdout.write(self.style.SUCCESS('CSV seeding complete.'))
 
@@ -113,6 +104,36 @@ class Command(BaseCommand):
                     user.save(update_fields=['password'])
                     self.stdout.write(f'Set password for user {user.username}.')
 
+    def load_departments(self, data_dir):
+        path = data_dir / 'departments.csv'
+        if not path.exists():
+            return
+        with path.open(newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                defaults = {
+                    'name': row['name'],
+                    'abbreviation': row['abbreviation'].upper(),
+                    'is_active': self.parse_bool(row['is_active']),
+                    'sort_order': self.parse_int(row['sort_order']),
+                }
+                dept, created = Department.objects.get_or_create(
+                    id=self.parse_int(row['id']),
+                    defaults=defaults,
+                )
+                if created:
+                    dept.save()
+                    self.stdout.write(f'Created department {dept.name}.')
+                else:
+                    updated = False
+                    for field, value in defaults.items():
+                        if getattr(dept, field) != value:
+                            setattr(dept, field, value)
+                            updated = True
+                    if updated:
+                        dept.save(update_fields=list(defaults.keys()))
+                        self.stdout.write(f'Updated department {dept.name}.')
+
     def load_exams(self, data_dir):
         path = data_dir / 'exams.csv'
         with path.open(newline='', encoding='utf-8') as f:
@@ -128,6 +149,12 @@ class Command(BaseCommand):
                     'status': row['status'],
                     'created_by_id': self.parse_int(row['created_by_id']),
                 }
+                if row.get('department_id'):
+                    defaults['department_id'] = self.parse_int(row['department_id'])
+                if row.get('exam_code'):
+                    defaults['exam_code'] = row['exam_code']
+                if row.get('monitoring_enabled') is not None:
+                    defaults['monitoring_enabled'] = self.parse_bool(row['monitoring_enabled'])
                 exam, created = Exam.objects.get_or_create(
                     id=self.parse_int(row['id']),
                     defaults=defaults,
@@ -255,33 +282,64 @@ class Command(BaseCommand):
                         self.stdout.write(f'Updated response {response.id}.')
 
     def flush_data(self):
-        data_dir = self.get_data_dir()
-        self.stdout.write('Removing seeded CSV test data...')
+        self.stdout.write('Removing all exam data and application users...')
 
-        question_ids = self.read_csv_ids(data_dir / 'questions.csv', id_field='id', cls=int)
-        exam_ids = self.read_csv_ids(data_dir / 'exams.csv', id_field='id', cls=int)
-        user_ids = self.read_csv_ids(data_dir / 'users.csv', id_field='id', cls=int)
-
-        # Cascade: drop every session that references a seed exam or seed user,
-        # not just the ones present in the CSV. This is needed because dev work
-        # often creates extra sessions which would otherwise block exam deletion
-        # (Exam -> ExamSession is PROTECT).
-        sessions = ExamSession.objects.filter(
-            models_q_in_exams_or_users(exam_ids, user_ids)
-        )
-        deleted_sessions = sessions.count()
-        sessions.delete()
+        deleted_sessions = ExamSession.objects.count()
+        ExamSession.objects.all().delete()
         if deleted_sessions:
             self.stdout.write(f'Deleted {deleted_sessions} session(s).')
 
-        if question_ids:
-            Question.objects.filter(id__in=question_ids).delete()
-        if exam_ids:
-            Exam.objects.filter(id__in=exam_ids).delete()
-        if user_ids:
-            self.user_model.objects.filter(id__in=user_ids).delete()
+        deleted_questions = Question.objects.count()
+        Question.objects.all().delete()
+        if deleted_questions:
+            self.stdout.write(f'Deleted {deleted_questions} question(s).')
 
-        self.stdout.write(self.style.SUCCESS('Seeded CSV data removed.'))
+        deleted_exams = Exam.objects.count()
+        Exam.objects.all().delete()
+        if deleted_exams:
+            self.stdout.write(f'Deleted {deleted_exams} exam(s).')
+
+        deleted_departments = Department.objects.count()
+        Department.objects.all().delete()
+        if deleted_departments:
+            self.stdout.write(f'Deleted {deleted_departments} department(s).')
+
+        removed = self.user_model.objects.filter(is_superuser=False).count()
+        self.user_model.objects.filter(is_superuser=False).delete()
+        if removed:
+            self.stdout.write(f'Deleted {removed} user(s).')
+
+        self.reset_sequences()
+        self.stdout.write(self.style.SUCCESS('Database cleared for reseed.'))
+
+    def reset_sequences(self):
+        """Bump PostgreSQL sequences after rows inserted with explicit IDs."""
+        from django.db import connection
+
+        if connection.vendor != 'postgresql':
+            return
+
+        models = (
+            self.user_model,
+            Department,
+            Exam,
+            Question,
+            Response,
+        )
+        with connection.cursor() as cursor:
+            for model in models:
+                table = model._meta.db_table
+                pk_col = model._meta.pk.column
+                cursor.execute(
+                    f"""
+                    SELECT setval(
+                        pg_get_serial_sequence(%s, %s),
+                        COALESCE((SELECT MAX({pk_col}) FROM {table}), 1),
+                        true
+                    )
+                    """,
+                    [table, pk_col],
+                )
 
     def read_csv_ids(self, csv_path, id_field='id', cls=int):
         ids = []

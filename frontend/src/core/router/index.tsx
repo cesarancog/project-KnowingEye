@@ -8,6 +8,7 @@ import { About } from "../../pages/about";
 import { Login } from "../../pages/login";
 import { NotFound } from "../../pages/not-found";
 import { ExamTakingWithBackend } from "../../pages/exam-taking-backend";
+import { ExamSetup } from "../../pages/exam-setup";
 import { ExamSubmitted } from "../../pages/exam-submitted";
 import { ExamResults } from "../../pages/exam-results";
 import { ExamSummary } from "../../pages/exam-summary";
@@ -17,6 +18,7 @@ import { SessionMonitor } from "../../pages/session-monitor";
 import { Reports } from "../../pages/reports";
 import { Profile } from "../../pages/profile";
 import { UsersAdmin } from "../../pages/users";
+import { SettingsAdmin } from "../../pages/settings";
 import { ProtectedRoute } from "../../shared/components/common/protected-route";
 
 function LegacyExamineeExamRedirect({ suffix = "" }: { suffix?: string }) {
@@ -52,7 +54,7 @@ export const router = createBrowserRouter([
       {
         path: "monitoring/:sessionId",
         element: (
-          <ProtectedRoute>
+          <ProtectedRoute requiredRole="ADMIN">
             <SessionMonitor />
           </ProtectedRoute>
         ),
@@ -73,6 +75,14 @@ export const router = createBrowserRouter([
           </ProtectedRoute>
         ),
       },
+      {
+        path: "settings",
+        element: (
+          <ProtectedRoute requiredRole="ADMIN">
+            <SettingsAdmin />
+          </ProtectedRoute>
+        ),
+      },
 
       // Profile (any authenticated user)
       {
@@ -85,6 +95,14 @@ export const router = createBrowserRouter([
       },
 
       // Examinee exam flow
+      {
+        path: "examinee/exam/:examId/setup",
+        element: (
+          <ProtectedRoute requiredRole="EXAMINEE">
+            <ExamSetup />
+          </ProtectedRoute>
+        ),
+      },
       {
         path: "examinee/exam/:examId",
         element: (

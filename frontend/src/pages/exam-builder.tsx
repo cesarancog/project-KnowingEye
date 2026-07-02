@@ -7,6 +7,10 @@ import {
   ArrowUp,
   CheckCircle2,
   ClipboardList,
+  Download,
+  FileAudio,
+  FileImage,
+  FileText,
   Loader2,
   Plus,
   Save,
@@ -16,10 +20,20 @@ import {
 
 import {
   apiClient,
+  formatApiError,
   type Exam,
   type PublishReadiness,
   type Question,
+  type QuestionAttachment,
 } from "../core/config/api";
+import {
+  CSV_TEMPLATE,
+  downloadImportTemplateCsv,
+  downloadImportTemplateXlsx,
+  readImportFileAsCsv,
+} from "../features/exams/lib/question-import-template";
+import { useConfirm } from "../shared/components/common/confirm-dialog";
+import { Checkbox } from "../shared/components/ui/checkbox";
 
 type Tab = "settings" | "questions" | "publish";
 
@@ -27,10 +41,10 @@ type ExamForm = {
   title: string;
   description: string;
   instructions: string;
-  exam_code: string;
   duration_minutes: number;
   passing_score: number;
   max_attempts: number;
+  monitoring_enabled: boolean;
   available_from: string;
   available_until: string;
 };
@@ -51,11 +65,6 @@ const EMPTY_QUESTION: QuestionDraft = {
   points: 1,
 };
 
-const CSV_TEMPLATE = `question_text,question_type,options,correct_answer,points
-What is 2 + 2?,multiple_choice,3|4|5,4,1
-The earth is round.,true_false,,true,1
-Define photosynthesis in one sentence.,short_answer,,process by which plants make food,2`;
-
 function toDatetimeLocal(iso?: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -73,10 +82,10 @@ function examToForm(exam: Exam): ExamForm {
     title: exam.title,
     description: exam.description ?? "",
     instructions: exam.instructions ?? "",
-    exam_code: exam.exam_code ?? "",
     duration_minutes: exam.duration_minutes,
     passing_score: exam.passing_score,
     max_attempts: exam.max_attempts ?? 1,
+    monitoring_enabled: exam.monitoring_enabled !== false,
     available_from: toDatetimeLocal(exam.available_from),
     available_until: toDatetimeLocal(exam.available_until),
   };
@@ -85,6 +94,7 @@ function examToForm(exam: Exam): ExamForm {
 export function ExamBuilder() {
   const { examId } = useParams();
   const id = Number(examId);
+  const confirm = useConfirm();
 
   const [tab, setTab] = useState<Tab>("settings");
   const [exam, setExam] = useState<Exam | null>(null);
@@ -99,8 +109,12 @@ export function ExamBuilder() {
   const [showQuestionForm, setShowQuestionForm] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [questionDraft, setQuestionDraft] = useState<QuestionDraft>(EMPTY_QUESTION);
+  const [questionAttachments, setQuestionAttachments] = useState<QuestionAttachment[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [importCsv, setImportCsv] = useState(CSV_TEMPLATE);
   const [importBusy, setImportBusy] = useState(false);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     if (!id || Number.isNaN(id)) return;
@@ -116,8 +130,8 @@ export function ExamBuilder() {
       setForm(examToForm(examData));
       setQuestions(questionList.sort((a, b) => a.order - b.order));
       setReadiness(readinessData);
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Failed to load exam");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Failed to load exam"));
     } finally {
       setLoading(false);
     }
@@ -143,10 +157,10 @@ export function ExamBuilder() {
         title: form.title,
         description: form.description,
         instructions: form.instructions,
-        exam_code: form.exam_code || null,
         duration_minutes: form.duration_minutes,
         passing_score: form.passing_score,
         max_attempts: form.max_attempts,
+        monitoring_enabled: form.monitoring_enabled,
         available_from: toIsoOrNull(form.available_from),
         available_until: toIsoOrNull(form.available_until),
       });
@@ -154,8 +168,8 @@ export function ExamBuilder() {
       setForm(examToForm(updated));
       setMessage("Exam settings saved.");
       await load();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Could not save settings");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Could not save settings"));
     } finally {
       setSaving(false);
     }
@@ -164,6 +178,8 @@ export function ExamBuilder() {
   const openNewQuestion = () => {
     setEditingQuestion(null);
     setQuestionDraft({ ...EMPTY_QUESTION, options: ["", "", "", ""] });
+    setQuestionAttachments([]);
+    setPendingFiles([]);
     setShowQuestionForm(true);
   };
 
@@ -176,7 +192,54 @@ export function ExamBuilder() {
       correct_answer: q.correct_answer ?? "",
       points: q.points,
     });
+    setQuestionAttachments(q.attachments ?? []);
+    setPendingFiles([]);
     setShowQuestionForm(true);
+  };
+
+  const uploadAttachment = async (questionId: number, file: File) => {
+    if (!exam) return;
+    setAttachmentBusy(true);
+    try {
+      const attachment = await apiClient.uploadQuestionAttachment(exam.id, questionId, file);
+      setQuestionAttachments((prev) => [...prev, attachment]);
+    } catch (e: unknown) {
+      setError(formatApiError(e));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const removeAttachment = async (attachment: QuestionAttachment) => {
+    if (!exam || !editingQuestion) return;
+    const confirmed = await confirm({
+      title: "Remove attachment?",
+      description: "This permanently deletes the attached file from the question.",
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setAttachmentBusy(true);
+    try {
+      await apiClient.deleteQuestionAttachment(exam.id, editingQuestion.id, attachment.id);
+      setQuestionAttachments((prev) => prev.filter((a) => a.id !== attachment.id));
+    } catch (e: unknown) {
+      setError(formatApiError(e));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const handleAttachmentPick = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const picked = Array.from(files);
+    if (editingQuestion) {
+      for (const file of picked) {
+        await uploadAttachment(editingQuestion.id, file);
+      }
+    } else {
+      setPendingFiles((prev) => [...prev, ...picked]);
+    }
   };
 
   const saveQuestion = async () => {
@@ -197,25 +260,35 @@ export function ExamBuilder() {
       if (editingQuestion) {
         await apiClient.updateQuestion(exam.id, editingQuestion.id, payload);
       } else {
-        await apiClient.createQuestion(exam.id, payload);
+        const created = await apiClient.createQuestion(exam.id, payload);
+        for (const file of pendingFiles) {
+          await apiClient.uploadQuestionAttachment(exam.id, created.id, file);
+        }
       }
       setShowQuestionForm(false);
       await load();
       setMessage(editingQuestion ? "Question updated." : "Question added.");
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Could not save question");
+    } catch (e: unknown) {
+      setError(formatApiError(e));
     } finally {
       setSaving(false);
     }
   };
 
   const removeQuestion = async (q: Question) => {
-    if (!exam || !confirm(`Delete question ${q.order}?`)) return;
+    if (!exam) return;
+    const confirmed = await confirm({
+      title: `Delete question ${q.order}?`,
+      description: "This permanently removes the question and its attachments.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) return;
     try {
       await apiClient.deleteQuestion(exam.id, q.id);
       await load();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Delete failed");
+    } catch (e: unknown) {
+      setError(formatApiError(e));
     }
   };
 
@@ -231,21 +304,51 @@ export function ExamBuilder() {
         ids.map((q) => q.id)
       );
       setQuestions(reordered.sort((a, b) => a.order - b.order));
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Reorder failed");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Reorder failed"));
+    }
+  };
+
+  const handleImportFile = async (file: File) => {
+    setError(null);
+    setImportErrors([]);
+    try {
+      const text = await readImportFileAsCsv(file);
+      setImportCsv(text);
+      setMessage(`Loaded "${file.name}". Review the rows below, then import.`);
+    } catch (e: unknown) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Could not read that file. Upload the worksheet (.xlsx) or a .csv file."
+      );
     }
   };
 
   const runImport = async () => {
     if (!exam) return;
-    setImportBusy(true);
     setError(null);
+    setMessage(null);
+    setImportErrors([]);
+    if (!importCsv.trim()) {
+      setImportErrors([
+        "Add at least one question row, or download the template to get started.",
+      ]);
+      return;
+    }
+    setImportBusy(true);
     try {
       const res = await apiClient.importQuestions(exam.id, importCsv);
       setMessage(`Imported ${res.imported} question(s).`);
       await load();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Import failed");
+    } catch (e: unknown) {
+      const payload = (e as { payload?: { errors?: unknown } } | null)?.payload;
+      const rowErrors = payload?.errors;
+      if (Array.isArray(rowErrors) && rowErrors.length) {
+        setImportErrors(rowErrors.map((m) => String(m)));
+      } else {
+        setError(formatApiError(e, "Import failed"));
+      }
     } finally {
       setImportBusy(false);
     }
@@ -257,10 +360,10 @@ export function ExamBuilder() {
     setError(null);
     try {
       await apiClient.publishExam(exam.id);
-      setMessage("Exam published — examinees can take it during the scheduled window.");
+      setMessage("Exam published - examinees can take it during the scheduled window.");
       await load();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Publish failed");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Publish failed"));
       const r = await apiClient.getExamReadiness(exam.id);
       setReadiness(r);
     } finally {
@@ -268,7 +371,7 @@ export function ExamBuilder() {
     }
   };
 
-  if (loading || !form || !exam) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center gap-2 text-muted-foreground">
         <Loader2 className="w-5 h-5 animate-spin" />
@@ -277,9 +380,33 @@ export function ExamBuilder() {
     );
   }
 
+  if (error && !exam) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-red-600 dark:text-red-400 max-w-md">{error}</p>
+        <Link
+          to="/examiner"
+          className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to dashboard
+        </Link>
+      </div>
+    );
+  }
+
+  if (!form || !exam) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-muted-foreground">Exam not found.</p>
+        <Link to="/examiner" className="text-sm text-primary hover:underline">
+          Back to dashboard
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen py-8">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-6xl">
+    <div className="mx-auto max-w-6xl space-y-6">
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center gap-4">
           <Link
             to="/examiner"
@@ -341,14 +468,30 @@ export function ExamBuilder() {
                   disabled={!isDraft}
                 />
               </Field>
-              <Field label="Exam code (optional)">
+              <Field label="Department">
                 <input
-                  value={form.exam_code}
-                  onChange={(e) => setForm({ ...form, exam_code: e.target.value })}
-                  placeholder="ENT-2026-A"
-                  className="field-input"
-                  disabled={!isDraft}
+                  value={
+                    exam.department
+                      ? `${exam.department.name} (${exam.department.abbreviation})`
+                      : "Not assigned"
+                  }
+                  className="field-input bg-muted/40"
+                  disabled
+                  readOnly
                 />
+              </Field>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="Exam code">
+                <input
+                  value={exam.exam_code ?? "Pending assignment"}
+                  className="field-input bg-muted/40 font-mono"
+                  disabled
+                  readOnly
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Assigned automatically when the exam was created.
+                </p>
               </Field>
             </div>
             <Field label="Description">
@@ -365,11 +508,35 @@ export function ExamBuilder() {
                 rows={4}
                 value={form.instructions}
                 onChange={(e) => setForm({ ...form, instructions: e.target.value })}
-                placeholder="Bring valid ID, ensure webcam works, no phones allowed…"
+                placeholder={
+                  form.monitoring_enabled
+                    ? "Bring valid ID, ensure webcam works, no phones allowed…"
+                    : "Read each question carefully, manage your time, no external resources…"
+                }
                 className="field-input"
                 disabled={!isDraft}
               />
             </Field>
+            <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={form.monitoring_enabled}
+                  onCheckedChange={(checked) =>
+                    setForm({ ...form, monitoring_enabled: checked === true })
+                  }
+                  disabled={!isDraft}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium">Camera monitoring</span>
+                  <span className="block text-xs text-muted-foreground mt-1">
+                    When enabled, examinees complete proctoring setup and their webcam stays active
+                    during the exam. Disable for practice quizzes or environments where monitoring is
+                    not required.
+                  </span>
+                </span>
+              </label>
+            </div>
             <div className="grid md:grid-cols-3 gap-4">
               <Field label="Duration (minutes)">
                 <input
@@ -474,6 +641,7 @@ export function ExamBuilder() {
                       {q.question_type === "multiple_choice" && q.options?.length
                         ? ` · ${q.options.length} options`
                         : ""}
+                      {q.attachments?.length ? ` · ${q.attachments.length} attachment(s)` : ""}
                     </p>
                   </div>
                   {isDraft && (
@@ -500,24 +668,99 @@ export function ExamBuilder() {
             </div>
 
             {isDraft && (
-              <div className="bg-card border border-border rounded-xl p-6">
-                <h3 className="font-semibold mb-2 flex items-center gap-2">
-                  <Upload className="w-4 h-4" /> Bulk import (CSV)
-                </h3>
-                <p className="text-xs text-muted-foreground mb-3">
-                  Columns: question_text, question_type, options (use | between choices), correct_answer, points.
-                  For true/false or short answer leave options empty.
-                </p>
-                <textarea
-                  rows={6}
-                  value={importCsv}
-                  onChange={(e) => setImportCsv(e.target.value)}
-                  className="field-input font-mono text-xs"
-                />
+              <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+                <div>
+                  <h3 className="font-semibold flex items-center gap-2">
+                    <Upload className="w-4 h-4" /> Bulk import from spreadsheet
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Download the worksheet template, fill in one question per row in Excel or
+                    Google Sheets, then upload the file back here (or paste CSV rows below).
+                  </p>
+                </div>
+
+                <div className="grid gap-3 text-xs sm:grid-cols-2">
+                  <div className="rounded-lg border border-border p-3 space-y-1.5">
+                    <p className="font-medium text-foreground">Columns</p>
+                    <ul className="list-disc pl-4 space-y-0.5 text-muted-foreground">
+                      <li><code>question_text</code> — the question (required)</li>
+                      <li><code>question_type</code> — multiple_choice, true_false, short_answer, or essay</li>
+                      <li><code>options</code> — choices separated by <code>|</code> (multiple choice only)</li>
+                      <li><code>correct_answer</code> — must match an option exactly; use true / false for true_false</li>
+                      <li><code>points</code> — whole number (defaults to 1)</li>
+                    </ul>
+                  </div>
+                  <div className="rounded-lg border border-border p-3 space-y-1.5">
+                    <p className="font-medium text-foreground">Tips</p>
+                    <ul className="list-disc pl-4 space-y-0.5 text-muted-foreground">
+                      <li>Leave <code>options</code> empty for non–multiple-choice questions.</li>
+                      <li>Upload the filled <code>.xlsx</code> worksheet directly — no need to export as CSV.</li>
+                      <li>Questions are added after existing ones, in row order.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={downloadImportTemplateXlsx}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-accent text-sm"
+                  >
+                    <Download className="w-4 h-4" /> Download worksheet (.xlsx)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadImportTemplateCsv}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-accent text-sm"
+                  >
+                    <Download className="w-4 h-4" /> Download CSV template
+                  </button>
+                  <label className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-accent text-sm cursor-pointer">
+                    <Upload className="w-4 h-4" /> Upload worksheet or CSV
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void handleImportFile(file);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <label className="block text-sm">
+                  <span className="mb-1 block text-muted-foreground">
+                    Import preview (edit or paste CSV rows here)
+                  </span>
+                  <textarea
+                    rows={7}
+                    value={importCsv}
+                    spellCheck={false}
+                    onChange={(e) => setImportCsv(e.target.value)}
+                    className="field-input font-mono text-xs"
+                  />
+                </label>
+
+                {importErrors.length > 0 && (
+                  <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+                    <p className="font-medium text-red-600 mb-2 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Fix {importErrors.length} issue{importErrors.length === 1 ? "" : "s"} and import again
+                    </p>
+                    <ul className="list-disc pl-5 text-sm space-y-1 text-red-600 max-h-48 overflow-y-auto">
+                      {importErrors.map((err, i) => (
+                        <li key={i}>{err}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <button
                   onClick={runImport}
                   disabled={importBusy}
-                  className="mt-3 px-4 py-2 rounded-lg border border-border hover:bg-accent"
+                  className="px-4 py-2 rounded-lg bg-primary text-primary-foreground disabled:opacity-50"
                 >
                   {importBusy ? "Importing…" : "Import questions"}
                 </button>
@@ -579,7 +822,6 @@ export function ExamBuilder() {
             )}
           </div>
         )}
-      </div>
 
       {showQuestionForm && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -688,6 +930,63 @@ export function ExamBuilder() {
                 </Field>
               )}
 
+              <div className="rounded-lg border border-border p-4 space-y-3">
+                <p className="text-sm font-medium">Attachments (image, PDF, audio)</p>
+                <p className="text-xs text-muted-foreground">
+                  Max 10 MB each. Shown to examinees above the question text.
+                </p>
+                <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-border p-4 hover:bg-accent/50">
+                  <Upload className="w-5 h-5 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">
+                    {attachmentBusy ? "Uploading…" : "Click to add files"}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf,audio/mpeg,audio/wav,audio/*"
+                    multiple
+                    className="hidden"
+                    disabled={attachmentBusy}
+                    onChange={(e) => {
+                      void handleAttachmentPick(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                <ul className="space-y-2 text-sm">
+                  {questionAttachments.map((a) => (
+                    <li key={a.id} className="flex items-center gap-2 rounded border px-3 py-2">
+                      <AttachmentIcon kind={a.kind} />
+                      <span className="flex-1 truncate">{a.caption || a.url.split("/").pop()}</span>
+                      {editingQuestion && (
+                        <button
+                          type="button"
+                          onClick={() => void removeAttachment(a)}
+                          className="text-red-500 hover:text-red-600"
+                          aria-label="Remove attachment"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                  {pendingFiles.map((f, i) => (
+                    <li key={`pending-${i}`} className="flex items-center gap-2 rounded border px-3 py-2">
+                      <FileText className="w-4 h-4 text-muted-foreground" />
+                      <span className="flex-1 truncate">{f.name}</span>
+                      <span className="text-xs text-muted-foreground">pending save</span>
+                      <button
+                        type="button"
+                        onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                        className="text-red-500"
+                        aria-label="Remove pending file"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
               <div className="flex gap-3 pt-2">
                 <button
                   onClick={() => setShowQuestionForm(false)}
@@ -707,18 +1006,14 @@ export function ExamBuilder() {
           </div>
         </div>
       )}
-
-      <style>{`
-        .field-input {
-          width: 100%;
-          padding: 0.5rem 1rem;
-          border-radius: 0.5rem;
-          border: 1px solid hsl(var(--border));
-          background: hsl(var(--background));
-        }
-      `}</style>
     </div>
   );
+}
+
+function AttachmentIcon({ kind }: { kind: QuestionAttachment["kind"] }) {
+  if (kind === "image") return <FileImage className="w-4 h-4 text-muted-foreground" />;
+  if (kind === "audio") return <FileAudio className="w-4 h-4 text-muted-foreground" />;
+  return <FileText className="w-4 h-4 text-muted-foreground" />;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

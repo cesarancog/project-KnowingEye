@@ -1,5 +1,6 @@
 from django.shortcuts import render
 
+from rest_framework.exceptions import ValidationError
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response as APIResponse
@@ -15,8 +16,9 @@ from .serializers import (
     ExamSessionStartSerializer,
     ExamSessionSubmitSerializer,
     ResponseSerializer,
-    SessionLogSerializer
+    SessionLogSerializer,
 )
+from .services import begin_exam_session, ensure_active_session, get_or_create_setup_session
 
 
 class ExamSessionViewSet(viewsets.ModelViewSet):
@@ -46,6 +48,8 @@ class ExamSessionViewSet(viewsets.ModelViewSet):
             return ExamSessionSubmitSerializer
         elif self.action == 'retrieve':
             return ExamSessionDetailSerializer
+        elif self.action == 'begin':
+            return ExamSessionDetailSerializer
         else:
             return ExamSessionListSerializer
 
@@ -71,6 +75,46 @@ class ExamSessionViewSet(viewsets.ModelViewSet):
         )
 
     @action(detail=True, methods=['post'])
+    def begin(self, request, pk=None):
+        """Begin the timed exam after proctoring setup is complete."""
+        session = self.get_object()
+        if session.user != request.user and not request.user.is_admin():
+            return APIResponse(
+                {'error': 'You can only begin your own exam sessions'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .services import begin_exam_session, ensure_active_session, touch_setup_activity
+
+        if session.status == ExamSession.Status.SETUP:
+            touch_setup_activity(session)
+
+        ensure_active_session(session, ip_address=self._get_client_ip(request))
+        session.refresh_from_db()
+        if session.status != ExamSession.Status.SETUP:
+            return APIResponse(
+                {
+                    'error': f'Session cannot begin (status: {session.get_status_display()}). '
+                    'Return to the dashboard and start setup again.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            begin_exam_session(session, ip_address=self._get_client_ip(request))
+        except ValidationError as exc:
+            raise exc
+
+        detail_serializer = ExamSessionDetailSerializer(session)
+        return APIResponse(
+            {
+                'message': 'Exam started - timer is now running.',
+                'session': detail_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
         """
         Submit exam responses and complete the session.
@@ -92,8 +136,16 @@ class ExamSessionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        ensure_active_session(session, ip_address=self._get_client_ip(request))
+        session.refresh_from_db()
+
         # Check if session can be submitted
         if not session.can_submit():
+            if session.status == ExamSession.Status.EXPIRED:
+                return APIResponse(
+                    {'error': 'Session has expired due to time limit'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             return APIResponse(
                 {'error': f'Session cannot be submitted (status: {session.get_status_display()})'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -147,6 +199,13 @@ class ExamSessionViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    def retrieve(self, request, *args, **kwargs):
+        session = self.get_object()
+        ensure_active_session(session, ip_address=self._get_client_ip(request))
+        session.refresh_from_db()
+        serializer = self.get_serializer(session)
+        return APIResponse(serializer.data)
+
     @action(detail=True, methods=['get'])
     def logs(self, request, pk=None):
         """
@@ -180,7 +239,10 @@ class ExamSessionViewSet(viewsets.ModelViewSet):
 
         session = self.get_object()
 
-        if session.status != ExamSession.Status.IN_PROGRESS:
+        if session.status not in (
+            ExamSession.Status.IN_PROGRESS,
+            ExamSession.Status.SETUP,
+        ):
             return APIResponse(
                 {'error': f'Cannot terminate session with status: {session.get_status_display()}'},
                 status=status.HTTP_400_BAD_REQUEST

@@ -1,0 +1,37 @@
+{
+  "chapters": [
+    {
+      "id": "manuscript",
+      "title": "Manuscript",
+      "pages": [
+        { "file": "documentation/index.html", "title": "Documentation Index", "kind": "index" }
+      ]
+    },
+    {
+      "id": "chapter1",
+      "title": "Chapter I - Introduction",
+      "pages": [
+        { "file": "documentation/chapter1/index.html", "title": "Chapter I Index", "kind": "index" },
+        { "file": "documentation/chapter1/01-background.html", "title": "Background of the Study" },
+        { "file": "documentation/chapter1/02-objectives.html", "title": "Objectives of the Study" },
+        { "file": "documentation/chapter1/03-significance-scope.html", "title": "Significance, Scope & Limitation" },
+        { "file": "documentation/chapter1/04-rrl.html", "title": "Review of Related Literature", "part": "WIP" },
+        { "file": "documentation/chapter1/05-synthesis.html", "title": "Synthesis", "part": "WIP" },
+        { "file": "documentation/chapter1/06-definition-of-terms.html", "title": "Definition of Terms" }
+      ]
+    },
+    {
+      "id": "chapter2",
+      "title": "Chapter II - Methodology",
+      "outline_source": "misc/DRAFT OUTLINE PAPER.docx.pdf",
+      "pages": [
+        { "file": "documentation/chapter2/index.html", "title": "Chapter II Index", "kind": "index" },
+        { "file": "documentation/chapter2/01-system-planning.html", "title": "System Planning", "part": "A" },
+        { "file": "documentation/chapter2/02-system-analysis.html", "title": "System Analysis", "part": "B" },
+        { "file": "documentation/chapter2/03-system-design.html", "title": "System Design", "part": "C" },
+        { "file": "documentation/chapter2/04-system-testing.html", "title": "System Testing and Implementation", "part": "D" },
+        { "file": "documentation/chapter2/05-system-maintenance.html", "title": "System Maintenance", "part": "E" }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM  Knowing Eye — development bootstrap (Windows)
+REM  Knowing Eye - development bootstrap (Windows)
 REM  Starts:
 REM   * Django ASGI server (Daphne) with WebSocket support on :8000
 REM   * Vite dev server on :5173 (HMR)
@@ -28,6 +28,6 @@ echo API base:         http://127.0.0.1:8000/api/
 echo WebSocket route:  ws://127.0.0.1:8000/ws/monitoring/{session-id}/?token=...
 echo Health check:     http://127.0.0.1:8000/api/monitoring/health/
 echo.
-echo First run seed:   cd backend ^&^& python manage.py seed_db --noinput
+echo First time?        Run start-setup.cmd once before using this script.
 echo.
 pause

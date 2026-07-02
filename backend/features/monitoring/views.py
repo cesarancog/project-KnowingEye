@@ -42,7 +42,7 @@ def _resolve_session(request, session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def receive_frame(request):
-    """POST /api/monitoring/frame/  — analyze a single base64 frame."""
+    """POST /api/monitoring/frame/  - analyze a single base64 frame."""
     image_data = request.data.get("image")
     session_id = request.data.get("session_id")
 
@@ -59,7 +59,28 @@ def receive_frame(request):
     if err:
         return err
 
-    if session.status != ExamSession.Status.IN_PROGRESS:
+    if not session.exam.monitoring_enabled:
+        return Response(
+            {"error": "Monitoring is disabled for this exam"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from features.session.services import ensure_active_session, touch_setup_activity
+
+    if session.status == ExamSession.Status.SETUP:
+        touch_setup_activity(session)
+
+    if not ensure_active_session(session):
+        session.refresh_from_db()
+        return Response(
+            {"error": "Session has expired due to time limit"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if session.status not in (
+        ExamSession.Status.SETUP,
+        ExamSession.Status.IN_PROGRESS,
+    ):
         return Response(
             {"error": "Session is not active"}, status=status.HTTP_400_BAD_REQUEST
         )
@@ -90,7 +111,7 @@ def receive_frame(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def enroll_reference_view(request):
-    """POST /api/monitoring/enroll/  — store a reference face for a session."""
+    """POST /api/monitoring/enroll/  - store a reference face for a session."""
     image_data = request.data.get("image")
     session_id = request.data.get("session_id")
 
@@ -103,18 +124,42 @@ def enroll_reference_view(request):
     if err:
         return err
 
+    if not session.exam.monitoring_enabled:
+        return Response(
+            {"error": "Monitoring is disabled for this exam"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     frame = decode_base64_image(image_data)
     if frame is None:
         return Response({"error": "invalid image"}, status=status.HTTP_400_BAD_REQUEST)
 
+    from features.session.services import ensure_active_session, touch_setup_activity
+
+    if session.status == ExamSession.Status.SETUP:
+        touch_setup_activity(session)
+
+    if not ensure_active_session(session):
+        session.refresh_from_db()
+        return Response(
+            {"error": "Session has expired - return to the dashboard and start setup again."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     result = _enroll_reference(frame, session=session)
+    logger.info(
+        "enroll session=%s ok=%s backend=%s",
+        session_id,
+        result.get("ok"),
+        result.get("backend"),
+    )
     return Response({**result, "session_id": str(session_id)})
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def monitoring_health(request):
-    """GET /api/monitoring/health/  — public health probe."""
+    """GET /api/monitoring/health/  - public health probe."""
     return Response(
         {
             "status": "ok",

@@ -1,5 +1,5 @@
 /**
- * Knowing Eye — typed API client for the Django REST backend.
+ * Knowing Eye - typed API client for the Django REST backend.
  *
  * Features
  * --------
@@ -10,6 +10,7 @@
  */
 
 import { API_BASE_URL } from "./env";
+import { extractApiErrorMessage } from "./extract-api-error";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,12 +38,24 @@ export interface ProfileUser extends AuthUser {
   updated_at: string;
 }
 
+export interface Department {
+  id: number;
+  name: string;
+  abbreviation: string;
+  is_active?: boolean;
+  sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Exam {
   id: number;
   title: string;
   description: string;
   instructions?: string;
   exam_code?: string | null;
+  department?: Department | null;
+  department_id?: number;
   duration_minutes: number;
   total_questions: number;
   passing_score: number;
@@ -50,6 +63,7 @@ export interface Exam {
   available_from?: string | null;
   available_until?: string | null;
   max_attempts?: number;
+  monitoring_enabled?: boolean;
   is_open?: boolean;
   created_at: string;
   updated_at?: string;
@@ -65,6 +79,15 @@ export interface PublishReadiness {
   total_points: number;
 }
 
+export interface QuestionAttachment {
+  id: number;
+  kind: "image" | "pdf" | "audio";
+  url: string;
+  caption: string;
+  order: number;
+  created_at?: string;
+}
+
 export interface Question {
   id: number;
   exam: number;
@@ -74,14 +97,16 @@ export interface Question {
   correct_answer?: string;
   points: number;
   order: number;
+  attachments?: QuestionAttachment[];
 }
 
 export interface ExamSession {
   id: string;
   user: number;
   exam: Exam;
-  status: "in_progress" | "completed" | "terminated" | "expired";
+  status: "setup" | "in_progress" | "completed" | "terminated" | "expired";
   started_at?: string;
+  exam_started_at?: string | null;
   submitted_at?: string;
   total_score?: number;
   percentage_score?: number;
@@ -105,23 +130,42 @@ export interface FrameMetrics {
   gaze_focus_pct: number;
   posture_compliance_pct: number;
   identity_match_pct: number | null;
-  object_clear_pct: number;
   overall_compliance_pct: number;
   alert_threshold_pct: number;
   flagged_metrics: string[];
   all_compliant: boolean;
 }
 
+export interface FrameAnalysisFace {
+  count: number;
+  head_yaw_deg?: number | null;
+  head_pitch_deg?: number | null;
+  bbox?: number[] | null;
+  bbox_norm?: number[] | null;
+  identity_distance?: number | null;
+}
+
+export interface FrameAnalysisPosture {
+  detected: boolean;
+  shoulder_tilt_ratio?: number | null;
+  spine_lean_ratio?: number | null;
+  guide_status?: "ok" | "no_pose" | "off_center";
+  posture_compliance_pct?: number;
+}
+
 export interface FrameAnalysis {
   session_id: string | null;
   timestamp: string | null;
   frame_index: number | null;
+  frame_size?: [number, number] | null;
+  face?: FrameAnalysisFace;
+  posture?: FrameAnalysisPosture;
   metrics: FrameMetrics;
   overall_compliance_pct: number;
   behavior_score: number;
   events: FrameEvent[];
   alerts: FrameAlert[];
-  pipeline_mode: string;
+  pipeline_mode?: string;
 }
 
 export interface FrameEvent {
@@ -193,6 +237,33 @@ export interface SessionReportRow {
   alert_count: number;
   unresolved_alert_count: number;
   behavior_event_count: number;
+}
+
+export interface PaginatedResponse<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
+export interface UserStats {
+  total: number;
+  admins: number;
+  examinees: number;
+  inactive: number;
+}
+
+type QueryParamValue = string | number | boolean | undefined | null;
+
+function toQuery(params?: Record<string, QueryParamValue>): string {
+  if (!params) return "";
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    sp.set(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -304,13 +375,22 @@ class ApiClient {
     email: string;
     password: string;
     password2: string;
-    first_name?: string;
-    last_name?: string;
+    first_name: string;
+    last_name: string;
+    avatar: File;
     role?: Role;
   }) {
+    const form = new FormData();
+    form.append("username", userData.username);
+    form.append("email", userData.email);
+    form.append("password", userData.password);
+    form.append("password2", userData.password2);
+    form.append("first_name", userData.first_name);
+    form.append("last_name", userData.last_name);
+    form.append("avatar", userData.avatar);
     return this.request<{ message: string; user: AuthUser }>("/auth/register/", {
       method: "POST",
-      body: JSON.stringify(userData),
+      body: form,
     });
   }
 
@@ -349,14 +429,19 @@ class ApiClient {
   }
 
   // ----- Admin user management -----
-  async listUsers(params?: { role?: string; search?: string }) {
-    const qs = params
-      ? "?" + new URLSearchParams(params as Record<string, string>).toString()
-      : "";
-    const data = await this.request<
-      { results?: ProfileUser[]; count?: number } | ProfileUser[]
-    >(`/auth/users/${qs}`);
-    return Array.isArray(data) ? data : data.results ?? [];
+  async listUsers(params?: {
+    role?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }) {
+    return this.request<PaginatedResponse<ProfileUser>>(
+      `/auth/users/${toQuery(params)}`
+    );
+  }
+
+  async getUserStats() {
+    return this.request<UserStats>("/auth/users/stats/");
   }
 
   async activateUser(id: number) {
@@ -376,6 +461,33 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify({ role }),
     });
+  }
+
+  // ----- Departments -----
+  async listDepartments(params?: { active_only?: boolean }) {
+    const qs = params?.active_only ? "?active_only=1" : "";
+    const data = await this.request<{ results?: Department[]; count?: number } | Department[]>(
+      `/departments/${qs}`
+    );
+    return Array.isArray(data) ? data : data.results ?? [];
+  }
+
+  async createDepartment(payload: Pick<Department, "name" | "abbreviation"> & Partial<Department>) {
+    return this.request<Department>("/departments/", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDepartment(id: number, payload: Partial<Department>) {
+    return this.request<Department>(`/departments/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteDepartment(id: number) {
+    return this.request<void>(`/departments/${id}/`, { method: "DELETE" });
   }
 
   // ----- Exams -----
@@ -465,12 +577,37 @@ class ApiClient {
     });
   }
 
+  async uploadQuestionAttachment(examId: number, questionId: number, file: File, caption?: string) {
+    const form = new FormData();
+    form.append("file", file);
+    if (caption) form.append("caption", caption);
+    return this.request<QuestionAttachment>(
+      `/exams/${examId}/questions/${questionId}/attachments/`,
+      { method: "POST", body: form }
+    );
+  }
+
+  async deleteQuestionAttachment(examId: number, questionId: number, attachmentId: number) {
+    return this.request<void>(
+      `/exams/${examId}/questions/${questionId}/attachments/${attachmentId}/`,
+      { method: "DELETE" }
+    );
+  }
+
   // ----- Sessions -----
   async startExamSession(examId: number) {
     const res = await this.request<{ session: ExamSession }>("/sessions/start/", {
       method: "POST",
       body: JSON.stringify({ exam: examId }),
     });
+    return res.session;
+  }
+
+  async beginExamSession(sessionId: string) {
+    const res = await this.request<{ session: ExamSession }>(
+      `/sessions/${sessionId}/begin/`,
+      { method: "POST" }
+    );
     return res.session;
   }
 
@@ -516,10 +653,20 @@ class ApiClient {
   }
 
   async enrollReference(body: { image: string; session_id: string }) {
-    return this.request<{ ok: boolean; pipeline_mode: string }>("/monitoring/enroll/", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 90_000);
+    try {
+      return await this.request<{ ok: boolean; message?: string; pipeline_mode: string }>(
+        "/monitoring/enroll/",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   async getMonitoringHealth() {
@@ -560,12 +707,15 @@ class ApiClient {
     return this.request<ReportSummary>("/reports/summary/");
   }
 
-  async listSessionReports(params?: { status?: string; exam?: number }) {
-    const qs = params
-      ? "?" + new URLSearchParams(params as Record<string, string>).toString()
-      : "";
-    return this.request<{ results: SessionReportRow[]; count: number }>(
-      `/reports/sessions/${qs}`
+  async listSessionReports(params?: {
+    status?: string;
+    exam?: number;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }) {
+    return this.request<PaginatedResponse<SessionReportRow>>(
+      `/reports/sessions/${toQuery(params)}`
     );
   }
 
@@ -586,9 +736,50 @@ class ApiClient {
     }>("/reports/timeseries/");
   }
 
-  exportSessionsCSV() {
-    // Returns a download URL with the current token; caller can <a href> it.
-    return `${this.baseURL}/reports/export/csv/`;
+  private async downloadExport(
+    path: string,
+    accept: string,
+    filename: string
+  ): Promise<void> {
+    const url = `${this.baseURL}${path}`;
+    const headers: Record<string, string> = { Accept: accept };
+    if (tokenStore.access) {
+      headers.Authorization = `Bearer ${tokenStore.access}`;
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const raw = await res.text();
+      let body: unknown = raw;
+      try {
+        body = raw ? JSON.parse(raw) : null;
+      } catch {
+        /* keep plain-text error body */
+      }
+      throw new ApiError(res.status, body);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  async downloadSessionsCSV(): Promise<void> {
+    return this.downloadExport(
+      "/reports/export/csv/",
+      "text/csv",
+      "knowing-eye-sessions.csv"
+    );
+  }
+
+  async downloadSessionsPDF(): Promise<void> {
+    return this.downloadExport(
+      "/reports/export/pdf/",
+      "application/pdf",
+      "knowing-eye-sessions.pdf"
+    );
   }
 }
 
@@ -597,15 +788,24 @@ export class ApiError extends Error {
     super(`API ${status}`);
   }
   detail(): string {
-    if (typeof this.payload === "string") return this.payload;
-    if (this.payload && typeof this.payload === "object") {
-      const p = this.payload as Record<string, unknown>;
-      if (typeof p.detail === "string") return p.detail;
-      if (typeof p.error === "string") return p.error;
-      return JSON.stringify(this.payload);
-    }
-    return String(this.payload);
+    return extractApiErrorMessage(this.payload);
   }
+}
+
+/**
+ * Normalize any thrown value into a user-facing error string.
+ *
+ * Centralizes error formatting so call sites do not reimplement
+ * `err?.detail?.() ?? err?.message ?? "..."` chains.
+ *
+ * @param err - The caught value (an {@link ApiError}, {@link Error}, or unknown).
+ * @param fallback - Message to use when no specific message can be derived.
+ * @returns A non-empty, human-readable error message.
+ */
+export function formatApiError(err: unknown, fallback = "Request failed"): string {
+  if (err instanceof ApiError) return err.detail() || fallback;
+  if (err instanceof Error) return err.message || fallback;
+  return fallback;
 }
 
 export const apiClient = new ApiClient(API_BASE_URL);
@@ -619,6 +819,13 @@ export function buildMonitoringWsUrl(sessionId: string): string {
   const token = tokenStore.access;
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   return `${base}/ws/monitoring/${sessionId}/${q}`;
+}
+
+export function buildSessionObserverWsUrl(sessionId: string): string {
+  const base = API_BASE_URL.replace(/^http/, "ws").replace(/\/api\/?$/, "");
+  const token = tokenStore.access;
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${base}/ws/monitoring/observe/${sessionId}/${q}`;
 }
 
 export function buildAdminAlertsWsUrl(): string {

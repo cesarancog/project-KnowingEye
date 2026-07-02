@@ -1,9 +1,9 @@
-"""Reporting endpoints — dashboard summary, session reports, CSV export."""
+"""Reporting endpoints - dashboard summary, session reports, CSV export."""
 
 from __future__ import annotations
 
 import csv
-from io import StringIO
+from io import BytesIO, StringIO
 
 from django.db.models import Avg, Count, Q
 from django.http import HttpResponse
@@ -12,6 +12,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.utils.constants import MAX_REPORT_EXPORT_ROWS
+
+from core.pagination import StandardResultsPagination
 from features.behavior.models import Alert, BehaviorLog
 from features.session.models import ExamSession
 from features.session.serializers import ExamSessionDetailSerializer
@@ -24,10 +27,41 @@ def _session_queryset(user):
     return qs.filter(user=user)
 
 
+def _annotate_sessions(qs):
+    return qs.annotate(
+        _alert_count=Count("alerts", distinct=True),
+        _behavior_count=Count("behavior_logs", distinct=True),
+        _unresolved=Count("alerts", filter=Q(alerts__resolved=False), distinct=True),
+    )
+
+
+def _serialize_session_rows(sessions):
+    return [
+        {
+            "id": str(s.id),
+            "exam_id": s.exam_id,
+            "exam_title": s.exam.title,
+            "user": s.user.username,
+            "user_full_name": f"{s.user.first_name} {s.user.last_name}".strip(),
+            "status": s.status,
+            "started_at": s.started_at,
+            "submitted_at": s.submitted_at,
+            "percentage_score": (
+                float(s.percentage_score) if s.percentage_score is not None else None
+            ),
+            "passed": s.passed,
+            "alert_count": s._alert_count,
+            "unresolved_alert_count": s._unresolved,
+            "behavior_event_count": s._behavior_count,
+        }
+        for s in sessions
+    ]
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def report_summary(request):
-    """GET /api/reports/summary/ — dashboard KPIs for admins/examinees."""
+    """GET /api/reports/summary/ - dashboard KPIs for admins/examinees."""
     sessions = _session_queryset(request.user)
     completed = sessions.filter(status=ExamSession.Status.COMPLETED)
     active = sessions.filter(status=ExamSession.Status.IN_PROGRESS)
@@ -43,18 +77,20 @@ def report_summary(request):
         behavior_qs.values("event_type").annotate(count=Count("id")).order_by("-count")
     )
 
+    completed_count = completed.count()
     return Response(
         {
             "total_sessions": sessions.count(),
             "active_sessions": active.count(),
-            "completed_sessions": completed.count(),
+            "completed_sessions": completed_count,
             "terminated_sessions": terminated.count(),
             "unresolved_alerts": alert_qs.filter(resolved=False).count(),
             "resolved_alerts": alert_qs.filter(resolved=True).count(),
             "behavior_events": behavior_qs.count(),
             "average_score": completed.aggregate(avg=Avg("percentage_score"))["avg"],
-            "pass_rate": completed.filter(passed=True).count()
-            / completed.count() * 100.0 if completed.count() else None,
+            "pass_rate": completed.filter(passed=True).count() / completed_count * 100.0
+            if completed_count
+            else None,
             "alerts_by_severity": by_severity,
             "events_by_type": by_event,
             "generated_at": timezone.now().isoformat(),
@@ -65,7 +101,7 @@ def report_summary(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def session_report(request, session_id):
-    """GET /api/reports/sessions/<uuid>/ — exhaustive session report."""
+    """GET /api/reports/sessions/<uuid>/ - exhaustive session report."""
     try:
         session = _session_queryset(request.user).get(pk=session_id)
     except ExamSession.DoesNotExist:
@@ -107,7 +143,7 @@ def session_report(request, session_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_session_reports(request):
-    """GET /api/reports/sessions/ — paginated list with KPI per session."""
+    """GET /api/reports/sessions/ - paginated list with KPI per session."""
     qs = _session_queryset(request.user).order_by("-started_at")
 
     status_filter = request.query_params.get("status")
@@ -118,41 +154,32 @@ def list_session_reports(request):
     if exam_id:
         qs = qs.filter(exam_id=exam_id)
 
-    qs = qs.annotate(
-        _alert_count=Count("alerts", distinct=True),
-        _behavior_count=Count("behavior_logs", distinct=True),
-        _unresolved=Count("alerts", filter=Q(alerts__resolved=False), distinct=True),
-    )
-
-    rows = []
-    for s in qs[:200]:
-        rows.append(
-            {
-                "id": str(s.id),
-                "exam_id": s.exam_id,
-                "exam_title": s.exam.title,
-                "user": s.user.username,
-                "user_full_name": f"{s.user.first_name} {s.user.last_name}".strip(),
-                "status": s.status,
-                "started_at": s.started_at,
-                "submitted_at": s.submitted_at,
-                "percentage_score": (
-                    float(s.percentage_score) if s.percentage_score is not None else None
-                ),
-                "passed": s.passed,
-                "alert_count": s._alert_count,
-                "unresolved_alert_count": s._unresolved,
-                "behavior_event_count": s._behavior_count,
-            }
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(user__username__icontains=search)
+            | Q(user__first_name__icontains=search)
+            | Q(user__last_name__icontains=search)
+            | Q(exam__title__icontains=search)
         )
-    return Response({"results": rows, "count": len(rows)})
+
+    qs = _annotate_sessions(qs)
+
+    paginator = StandardResultsPagination()
+    page = paginator.paginate_queryset(qs, request)
+    rows = _serialize_session_rows(page or [])
+    return paginator.get_paginated_response(rows)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def export_sessions_csv(request):
-    """GET /api/reports/export/csv/ — downloadable CSV of session reports."""
-    qs = _session_queryset(request.user).order_by("-started_at")[:1000]
+    """GET /api/reports/export/csv/ - downloadable CSV of session reports."""
+    qs = (
+        _annotate_sessions(_session_queryset(request.user))
+        .select_related("exam", "user")
+        .order_by("-started_at")[:MAX_REPORT_EXPORT_ROWS]
+    )
 
     buffer = StringIO()
     writer = csv.writer(buffer)
@@ -185,9 +212,9 @@ def export_sessions_csv(request):
                 s.submitted_at.isoformat() if s.submitted_at else "",
                 float(s.percentage_score) if s.percentage_score is not None else "",
                 s.passed if s.passed is not None else "",
-                s.alerts.count(),
-                s.alerts.filter(resolved=False).count(),
-                s.behavior_logs.count(),
+                s._alert_count,
+                s._unresolved,
+                s._behavior_count,
             ]
         )
 
@@ -199,8 +226,73 @@ def export_sessions_csv(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def export_sessions_pdf(request):
+    """GET /api/reports/export/pdf/ - downloadable PDF summary of session reports."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    qs = (
+        _annotate_sessions(_session_queryset(request.user))
+        .select_related("exam", "user")
+        .order_by("-started_at")[:MAX_REPORT_EXPORT_ROWS]
+    )
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 50
+
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(50, y, "Knowing Eye - Session Report Export")
+    y -= 24
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(50, y, f"Generated: {timezone.now():%Y-%m-%d %H:%M UTC}")
+    y -= 30
+
+    pdf.setFont("Helvetica-Bold", 9)
+    headers = ["Session", "Exam", "User", "Status", "Score", "Alerts"]
+    col_x = [50, 130, 250, 330, 410, 470]
+    for x, label in zip(col_x, headers):
+        pdf.drawString(x, y, label)
+    y -= 16
+    pdf.setFont("Helvetica", 8)
+
+    for session in qs:
+        if y < 60:
+            pdf.showPage()
+            y = height - 50
+            pdf.setFont("Helvetica", 8)
+
+        score = (
+            f"{float(session.percentage_score):.1f}%"
+            if session.percentage_score is not None
+            else "-"
+        )
+        row = [
+            str(session.id)[:8],
+            (session.exam.title or "")[:18],
+            session.user.username[:14],
+            session.status[:12],
+            score,
+            str(session._alert_count),
+        ]
+        for x, value in zip(col_x, row):
+            pdf.drawString(x, y, value)
+        y -= 14
+
+    pdf.save()
+    buffer.seek(0)
+
+    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+    filename = f"knowing-eye-sessions-{timezone.now():%Y%m%d-%H%M%S}.pdf"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def analytics_timeseries(request):
-    """GET /api/reports/timeseries/ — behaviors and alerts per day (last 30 days)."""
+    """GET /api/reports/timeseries/ - behaviors and alerts per day (last 30 days)."""
     from django.db.models.functions import TruncDate
 
     sessions = _session_queryset(request.user)

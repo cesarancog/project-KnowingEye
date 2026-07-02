@@ -1,23 +1,34 @@
+"""Reusable input validation helpers."""
+
+from __future__ import annotations
+
 import re
+from typing import Any
+
+from django.core.exceptions import ValidationError
 
 
-def is_valid_email(email: str) -> bool:
-    if not email:
-        return False
-    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()))
+def require_non_blank(value: Any, field: str = "value") -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValidationError({field: "This field is required."})
+    return text
 
 
-def is_valid_username(username: str) -> bool:
-    if not username:
-        return False
-    return bool(re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username))
+def validate_phone(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    if not re.fullmatch(r"[\d+\-\s()]{7,32}", text):
+        raise ValidationError({"phone": "Enter a valid phone number."})
+    return text
 
 
-def is_strong_password(password: str, min_length: int = 8) -> bool:
-    """Project-level lightweight password strength check."""
-    if not password or len(password) < min_length:
-        return False
-    has_upper = any(c.isupper() for c in password)
-    has_lower = any(c.islower() for c in password)
-    has_digit = any(c.isdigit() for c in password)
-    return has_upper and has_lower and has_digit
+def validate_percentage(value: float | int, field: str = "value") -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({field: "Must be a number."}) from exc
+    if pct < 0 or pct > 100:
+        raise ValidationError({field: "Must be between 0 and 100."})
+    return pct

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Save, ShieldCheck } from "lucide-react";
 
-import { apiClient, type ProfileUser } from "../core/config/api";
+import { apiClient, formatApiError, type ProfileUser } from "../core/config/api";
 import { useAuth } from "../core/providers/auth-provider";
 
 export function Profile() {
@@ -18,7 +18,7 @@ export function Profile() {
     apiClient
       .getProfile()
       .then(setProfile)
-      .catch((e) => setError(e?.detail?.() ?? e?.message ?? "Failed to load profile"));
+      .catch((e) => setError(formatApiError(e, "Failed to load profile")));
   }, []);
 
   const onChange = <K extends keyof ProfileUser>(key: K, value: ProfileUser[K]) => {
@@ -40,8 +40,8 @@ export function Profile() {
       });
       setSavedAt(new Date());
       await refresh();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Failed to save");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Failed to save"));
     } finally {
       setSaving(false);
     }
@@ -53,8 +53,8 @@ export function Profile() {
       const updated = await apiClient.uploadAvatar(file);
       setProfile(updated);
       await refresh();
-    } catch (e: any) {
-      setError(e?.detail?.() ?? e?.message ?? "Avatar upload failed");
+    } catch (e: unknown) {
+      setError(formatApiError(e, "Avatar upload failed"));
     }
   };
 
@@ -68,8 +68,8 @@ export function Profile() {
       });
       setPasswordMsg("Password updated successfully.");
       setPasswords({ old: "", new1: "", new2: "" });
-    } catch (e: any) {
-      setPasswordMsg(e?.detail?.() ?? e?.message ?? "Could not change password");
+    } catch (e: unknown) {
+      setPasswordMsg(formatApiError(e, "Could not change password"));
     }
   };
 
@@ -82,8 +82,7 @@ export function Profile() {
   }
 
   return (
-    <div className="min-h-screen py-8">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-5xl space-y-6">
+    <div className="space-y-6">
         <h1 className="text-3xl md:text-4xl font-bold mb-1">Profile</h1>
         <p className="text-muted-foreground">
           Update your personal details, avatar and password.
@@ -192,7 +191,6 @@ export function Profile() {
             </button>
           </div>
         </section>
-      </div>
     </div>
   );
 }
